@@ -31,7 +31,22 @@ async function token() {
     body: JSON.stringify({ client_id: id, client_secret: secret }),
   });
   const text = await res.text();
-  if (!res.ok) throw new Error(`Token request failed: HTTP ${res.status} ${text.slice(0, 300)}`);
+  if (!res.ok) {
+    const h = {};
+    for (const k of ['server', 'via', 'x-cache', 'x-amz-cf-pop', 'x-amzn-errortype', 'cf-ray', 'content-type', 'www-authenticate']) {
+      if (res.headers.get(k)) h[k] = res.headers.get(k);
+    }
+    console.error('Token response headers: ' + JSON.stringify(h));
+    try {
+      const ip = await (await fetch('https://ipinfo.io/json')).json();
+      console.error('Runner location: ' + [ip.city, ip.region, ip.country].join(', '));
+    } catch (e) {}
+    try {
+      const home = await fetch('https://www.fuel-finder.service.gov.uk/');
+      console.error('Plain GET of the Fuel Finder home page from here: HTTP ' + home.status);
+    } catch (e) {}
+    throw new Error(`Token request failed: HTTP ${res.status} ${text.slice(0, 300)}`);
+  }
   const d = unwrap(JSON.parse(text));
   if (!d.access_token) throw new Error('Token response had no access_token: ' + text.slice(0, 300));
   return d.access_token;
