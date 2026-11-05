@@ -8,7 +8,7 @@ export async function loadData() {
     const raw = await AsyncStorage.getItem(KEY);
     if (!raw) return EMPTY;
     const d = JSON.parse(raw);
-    return { car: d.car || null, entries: d.entries || [], stations: d.stations || {} };
+    return { ...d, car: d.car || null, entries: d.entries || [], stations: d.stations || {} };
   } catch (e) {
     return EMPTY;
   }

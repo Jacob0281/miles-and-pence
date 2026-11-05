@@ -8,7 +8,7 @@ import {
 import { loadData, newId, saveData } from './src/store';
 import { useTripTracker } from './src/useTripTracker';
 import { livePrice } from './src/stations';
-import { VEHICLE_LOOKUP_URL } from './src/config';
+import { APP_VERSION, VEHICLE_LOOKUP_URL } from './src/config';
 
 const ago = (iso) => {
   if (!iso) return '';
@@ -94,7 +94,8 @@ export default function App() {
   useEffect(() => {
     loadData().then((d) => {
       setData(d);
-      if (!officialMpg(d.car)) setScreen('car');
+      if (!d.welcomed && !d.car) setScreen('welcome');
+      else if (!officialMpg(d.car)) setScreen('car');
     });
   }, []);
 
@@ -174,6 +175,8 @@ export default function App() {
               onCancel={() => setScreen('history')} />
           )}
           {screen === 'history' && <HistoryScreen data={data} cal={cal} price={price} update={update} say={say} go={setScreen} />}
+          {screen === 'welcome' && <WelcomeScreen onDone={() => { update((d) => ({ ...d, welcomed: true })); setScreen('car'); }} />}
+          {screen === 'feedback' && <FeedbackScreen data={data} cal={cal} price={price} say={say} onDone={() => setScreen('home')} />}
         </View>
       </ScrollView>
       {showNav && (
@@ -410,6 +413,9 @@ function HomeScreen({ data, mpg, price, cal, tracker, onStart, go, onFill, addEn
         <Btn kind="quiet" title="Log a fill-up" onPress={onFill} style={st.flex} />
         <Btn kind="quiet" title="Add trip by hand" onPress={() => go('manual')} style={st.flex} />
       </View>
+      <Pressable accessibilityRole="button" onPress={() => go('feedback')} style={{ alignSelf: 'center', minHeight: 44, justifyContent: 'center', paddingHorizontal: 12 }}>
+        <Text style={[st.body, { color: C.amber, fontWeight: '700' }]}>Send feedback</Text>
+      </Pressable>
     </View>
   );
 }
@@ -711,6 +717,136 @@ function HistoryScreen({ data, cal, price, update, say, go }) {
       })}
       <Btn kind="quiet" title="Export my data" onPress={exportData} />
       <Text style={st.small}>Sends everything as text so you can paste it into Claude for a check-up.</Text>
+      <Btn kind="quiet" title="Send feedback" onPress={() => go('feedback')} />
+    </View>
+  );
+}
+
+// ---------- welcome (first launch) ----------
+const WELCOME_STEPS = [
+  {
+    title: 'What did that journey cost?',
+    body: 'Miles & Pence works out the fuel cost of every trip as you drive. It uses your car, the way you drive and live UK pump prices.',
+  },
+  {
+    title: 'How to use it',
+    points: [
+      'Put your phone in a mount with the app open.',
+      'While driving, set Settings › Display & Brightness › Auto-Lock to Never. The app can’t track while the phone is locked.',
+      'Tap Start a trip as you set off, and wait for the green dot.',
+      'Stop at a fuel station and it asks how much you spent.',
+      'Fill to full twice, entering your mileage, so it learns your car.',
+    ],
+  },
+  {
+    title: 'Your data stays on your phone',
+    body: 'Your trips and fill-ups are stored only on this phone. Nothing leaves it unless you tap Export my data or Send feedback.\n\nThis is a test version, so things will change. Thanks for helping.',
+  },
+];
+
+function WelcomeScreen({ onDone }) {
+  const [i, setI] = useState(0);
+  const s = WELCOME_STEPS[i];
+  const last = i === WELCOME_STEPS.length - 1;
+  return (
+    <View style={[st.gap, { minHeight: 600 }]}>
+      <Brand />
+      <View style={{ flexDirection: 'row', gap: 6, marginTop: 24 }} accessibilityLabel={'Step ' + (i + 1) + ' of ' + WELCOME_STEPS.length}>
+        {WELCOME_STEPS.map((_, k) => (
+          <View key={k} style={{ height: 4, flex: 1, borderRadius: 2, backgroundColor: k <= i ? C.amber : C.line }} />
+        ))}
+      </View>
+      <Text style={[st.h1, { fontSize: 32, marginTop: 16 }]}>{s.title}</Text>
+      {s.body ? <Text style={[st.body, { fontSize: 17, lineHeight: 26 }]}>{s.body}</Text> : null}
+      {s.points ? (
+        <View style={{ gap: 14 }}>
+          {s.points.map((p, k) => (
+            <View key={k} style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+              <View style={st.stepNum}><Text style={st.stepNumText}>{k + 1}</Text></View>
+              <Text style={[st.body, { flex: 1, color: C.ink, fontSize: 16 }]}>{p}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      <View style={{ flex: 1 }} />
+      <Btn title={last ? 'Set up my car' : 'Next'} onPress={() => (last ? onDone() : setI(i + 1))} />
+      {i > 0 ? <Btn kind="quiet" title="Back" onPress={() => setI(i - 1)} /> : null}
+    </View>
+  );
+}
+
+// ---------- feedback ----------
+const FEEDBACK_TOPICS = ['Something broke', 'A cost looked wrong', 'Missed a trip or fuel stop', 'An idea', 'Something else'];
+
+function FeedbackScreen({ data, cal, price, say, onDone }) {
+  const [topic, setTopic] = useState(null);
+  const [text, setText] = useState('');
+  const [withSummary, setWithSummary] = useState(true);
+
+  const summary = () => {
+    const c = data.car || {};
+    const mon = todayKey().slice(0, 7);
+    const s = monthSummary(data.car, data.entries, mon);
+    const trips = sortEntries(data.entries).filter((e) => e.kind === 'trip');
+    const fills = data.entries.filter((e) => e.kind === 'fill');
+    const lastTrips = trips.slice(-3).reverse().map((t) => {
+      const f = tripFuel(t, data.car, data.entries, cal, price);
+      return '  ' + t.date + ': ' + t.miles + ' mi, ' + (f.cost != null ? gbp(f.cost) : '?') + (t.source === 'gps' ? '' : ' (by hand)') + (t.gapMiles ? ', ' + t.gapMiles + ' mi estimated' : '');
+    });
+    return [
+      '— Details —',
+      'App: Miles & Pence ' + APP_VERSION + (Platform.OS === 'web' && typeof navigator !== 'undefined' ? ' · ' + (/iPhone|iPad/.test(navigator.userAgent) ? 'iPhone' : /Android/.test(navigator.userAgent) ? 'Android' : 'other') : ''),
+      'Car: ' + ([c.make, c.model].filter(Boolean).join(' ') || 'not looked up') + ', ' + (c.fuel || '?') + ', official ' + (officialMpg(c) ? officialMpg(c).toFixed(1) : '?') + ' mpg' + (cal.realMpg ? ', real ' + cal.realMpg.toFixed(1) + ' mpg' : ''),
+      'Logged: ' + trips.length + ' trips, ' + fills.length + ' fill-ups',
+      'This month: ' + Math.round(s.miles) + ' mi, trips ' + gbp(s.est) + ', fuel bought ' + gbp(s.bought),
+      ...(lastTrips.length ? ['Last trips:', ...lastTrips] : []),
+    ].join('\n');
+  };
+
+  const send = async () => {
+    const message = ['Miles & Pence feedback' + (topic ? ': ' + topic : ''), '', text.trim(), '', withSummary ? summary() : ''].join('\n').trim();
+    try {
+      if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.share) {
+        await navigator.share({ title: 'Miles & Pence feedback', text: message });
+      } else if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(message);
+        say('Copied. Paste it into a message to send.');
+      } else {
+        await Share.share({ message });
+      }
+      onDone();
+    } catch (e) {
+      if (!(e && e.name === 'AbortError')) say("Couldn't open sharing");
+    }
+  };
+
+  return (
+    <View style={st.gap}>
+      <Brand reg={data.car && data.car.reg} />
+      <Text style={st.h1}>Send feedback</Text>
+      <Text style={st.body}>What happened, or what would make it better? It opens your phone’s share sheet, so you can send it by message or email to whoever invited you to test.</Text>
+      <View style={st.chips}>
+        {FEEDBACK_TOPICS.map((t) => (
+          <Pressable key={t} accessibilityRole="button" accessibilityState={{ selected: topic === t }} onPress={() => setTopic(topic === t ? null : t)}
+            style={[st.topicChip, topic === t && st.chipOn]}>
+            <Text style={[st.btnTextQuiet, { fontSize: 14 }, topic === t && { color: C.onAmber }]}>{t}</Text>
+          </Pressable>
+        ))}
+      </View>
+      <View style={st.field}>
+        <Text style={st.fieldLabel}>Tell us more</Text>
+        <TextInput value={text} onChangeText={setText} multiline placeholder="e.g. The trip to work said 12.1 miles but the car said 13.4" placeholderTextColor="#6F827B"
+          accessibilityLabel="Tell us more" style={[st.input, { height: 140, paddingTop: 12, textAlignVertical: 'top' }]} />
+      </View>
+      <View style={st.switchRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={st.switchText}>Include a trip summary</Text>
+          <Text style={st.small}>Your car, totals and last 3 trips. No locations.</Text>
+        </View>
+        <Switch value={withSummary} onValueChange={setWithSummary} trackColor={{ true: C.amber, false: C.line }} accessibilityLabel="Include a trip summary" />
+      </View>
+      <Btn title="Send feedback" onPress={send} disabled={!topic && !text.trim()} />
+      <Btn kind="quiet" title="Cancel" onPress={onDone} />
     </View>
   );
 }
@@ -749,6 +885,9 @@ const st = StyleSheet.create({
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   chip: { flexBasis: '30%', flexGrow: 1, height: 58, borderRadius: 14, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface, alignItems: 'center', justifyContent: 'center' },
   chipWide: { flexBasis: '100%' },
+  topicChip: { minHeight: 44, paddingHorizontal: 14, borderRadius: 22, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface, alignItems: 'center', justifyContent: 'center' },
+  stepNum: { width: 28, height: 28, borderRadius: 14, backgroundColor: C.amber, alignItems: 'center', justifyContent: 'center', marginTop: -2 },
+  stepNumText: { color: C.onAmber, fontWeight: '800', fontFamily: SANS },
   chipOn: { backgroundColor: C.amber, borderColor: C.amber },
   card: { backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, borderRadius: 18, padding: 16, gap: 10 },
   stats: { flexDirection: 'row', gap: 10 },
