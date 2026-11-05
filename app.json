@@ -1,24 +1,39 @@
 {
   "expo": {
-    "name": "miles-and-pence",
+    "name": "Miles & Pence",
     "slug": "miles-and-pence",
-    "version": "1.0.0",
+    "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0E1A17",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "uk.milesandpence.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Miles & Pence uses your location to measure each trip and work out what it cost in fuel."
+      }
     },
     "android": {
+      "package": "uk.milesandpence.app",
+      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"],
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#0E1A17",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       }
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "output": "single",
+      "name": "Miles & Pence",
+      "shortName": "Miles & Pence",
+      "themeColor": "#0E1A17",
+      "backgroundColor": "#0E1A17"
+    },
+    "experiments": {
+      "baseUrl": "/miles-and-pence"
     }
   }
 }
