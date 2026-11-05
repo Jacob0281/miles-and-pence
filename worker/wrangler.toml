@@ -1,0 +1,11 @@
+name = "miles-and-pence-lookup"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[vars]
+ALLOWED_ORIGINS = "https://jacob0281.github.io,http://localhost:8081,http://localhost:8765"
+
+# Secrets (set by the GitHub deploy job from repository secrets, never stored here):
+#   MOT_CLIENT_ID, MOT_CLIENT_SECRET, MOT_API_KEY   (DVSA MOT History API)
+#   DVLA_API_KEY                                     (DVLA Vehicle Enquiry Service)

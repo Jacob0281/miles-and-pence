@@ -8,6 +8,7 @@ import {
 import { loadData, newId, saveData } from './src/store';
 import { useTripTracker } from './src/useTripTracker';
 import { livePrice } from './src/stations';
+import { VEHICLE_LOOKUP_URL } from './src/config';
 
 const ago = (iso) => {
   if (!iso) return '';
@@ -202,12 +203,95 @@ function Brand({ reg }) {
   );
 }
 
+// ---------- car setup: reg → "Is this your car?" → details ----------
+const carName = (v) => [v && v.make, v && v.model].filter(Boolean).join(' ') || 'Your car';
+const carLine = (v) => [v.colour, v.fuelLabel || (v.fuel && v.fuel[0].toUpperCase() + v.fuel.slice(1)),
+  v.engineCc ? (v.engineCc / 1000).toFixed(1) + ' litre' : null, v.year].filter(Boolean).join(' · ');
+
+function Plate({ value, onChangeText }) {
+  return (
+    <View style={st.plateBox}>
+      <View style={st.plateFlag}><Text style={st.plateFlagText}>UK</Text></View>
+      <TextInput value={value} onChangeText={(t) => onChangeText(t.toUpperCase())} placeholder="AB12 CDE" placeholderTextColor="#8A7A2A"
+        autoCapitalize="characters" autoCorrect={false} accessibilityLabel="Registration" style={st.plateInput} maxLength={9} />
+    </View>
+  );
+}
+
 function CarScreen({ data, update, onDone }) {
+  const editing = !!data.car;
+  const [stage, setStage] = useState(editing ? 'details' : 'reg'); // reg | looking | confirm | details
+  const [reg, setReg] = useState((data.car && data.car.reg) || '');
+  const [found, setFound] = useState(null);
+  const [note, setNote] = useState(null);
+  const lookupOn = !!VEHICLE_LOOKUP_URL;
+
+  const find = async () => {
+    const clean = reg.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (clean.length < 2) { setNote('Enter your registration first.'); return; }
+    if (!lookupOn) { setNote(null); setFound(null); setStage('details'); return; }
+    setNote(null);
+    setStage('looking');
+    try {
+      const res = await fetch(VEHICLE_LOOKUP_URL.replace(/\/$/, '') + '/vehicle?reg=' + encodeURIComponent(clean));
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body.found) { setFound(body); setStage('confirm'); return; }
+      setNote(res.ok ? 'We couldn’t find ' + clean + '. Check the reg, or enter your car’s details yourself.'
+        : body.error || 'The lookup isn’t working right now. You can enter your car’s details yourself.');
+    } catch (e) {
+      setNote('The lookup isn’t working right now. You can enter your car’s details yourself.');
+    }
+    setStage('reg');
+  };
+
+  if (stage === 'details') {
+    return <CarDetails data={data} update={update} onDone={onDone} found={found} regInit={reg}
+      onLookup={lookupOn ? () => { setFound(null); setStage('reg'); } : null} />;
+  }
+
+  return (
+    <View style={st.gap}>
+      <Brand />
+      {stage === 'confirm' && found ? (
+        <>
+          <Label>We found</Label>
+          <View style={[st.card, { gap: 6 }]}>
+            <Text style={st.plateSmall}>{found.reg}</Text>
+            <Text style={[st.h1, { fontSize: 28 }]}>{carName(found)}</Text>
+            <Text style={st.body}>{carLine(found)}</Text>
+            {found.mileage && found.mileage.lastReading ? (
+              <Text style={st.small}>
+                Last MOT: {found.mileage.lastReading.toLocaleString('en-GB')} miles ({new Date(found.mileage.lastDate).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })})
+                {found.mileage.perYear ? ' · about ' + (Math.round(found.mileage.perYear / 500) * 500).toLocaleString('en-GB') + ' miles a year' : ''}
+              </Text>
+            ) : null}
+          </View>
+          <Text style={st.h1}>Is this your car?</Text>
+          {found.fuel === 'electric' ? <Text style={st.warn}>This looks like an electric car. Miles & Pence only costs petrol and diesel for now.</Text> : null}
+          <Btn title="Yes, that's my car" onPress={() => setStage('details')} />
+          <Btn kind="quiet" title="No, that's not it" onPress={() => { setFound(null); setNote('Check the reg and try again, or enter your car’s details yourself.'); setStage('reg'); }} />
+        </>
+      ) : (
+        <>
+          <Text style={st.h1}>What do you drive?</Text>
+          <Text style={st.body}>{lookupOn ? 'Enter your reg and we’ll find your car.' : 'Enter your reg to get started.'}</Text>
+          <Plate value={reg} onChangeText={setReg} />
+          {note ? <Text style={st.warn}>{note}</Text> : null}
+          <Btn title={stage === 'looking' ? 'Looking up…' : lookupOn ? 'Find my car' : 'Continue'} onPress={find} disabled={stage === 'looking'} />
+          {lookupOn ? <Btn kind="quiet" title="Enter details myself" onPress={() => { setFound(null); setStage('details'); }} /> : null}
+        </>
+      )}
+    </View>
+  );
+}
+
+function CarDetails({ data, update, onDone, found, regInit, onLookup }) {
   const c = data.car || {};
-  const [reg, setReg] = useState(c.reg || '');
-  const [fuel, setFuel] = useState(c.fuel || 'petrol');
+  const known = found || (c.make ? c : null);
+  const [reg, setReg] = useState(regInit || c.reg || '');
+  const [fuel, setFuel] = useState(found && (found.fuel === 'diesel' ? 'diesel' : found.fuel ? 'petrol' : null) || c.fuel || 'petrol');
   const [grade, setGrade] = useState(c.grade || 'standard');
-  const [co2, setCo2] = useState(c.co2 != null ? String(c.co2) : '');
+  const [co2, setCo2] = useState(found && found.co2 ? String(found.co2) : c.co2 != null ? String(c.co2) : '');
   const [mpgIn, setMpgIn] = useState(c.mpg != null ? String(c.mpg) : '');
   const [priceIn, setPriceIn] = useState(c.price != null ? String(c.price) : '');
   const draft = { fuel, grade, co2: num(co2), mpg: num(mpgIn), price: num(priceIn) };
@@ -219,9 +303,15 @@ function CarScreen({ data, update, onDone }) {
   return (
     <View style={st.gap}>
       <Brand />
-      <Text style={st.h1}>{data.car ? 'Your car' : 'What do you drive?'}</Text>
-      <Text style={st.body}>Your CO₂ figure is on your V5C logbook or any free reg-check site. We turn it into an mpg, then adjust it to your real driving as fill-ups come in.</Text>
+      <Text style={st.h1}>{known ? carName(known) : 'Your car'}</Text>
+      {known ? <Text style={[st.body, { marginTop: -8 }]}>{carLine(known)}</Text> : null}
+      <Text style={st.body}>
+        {found && found.co2
+          ? 'We’ve filled in your CO₂ figure. Add the price you usually pay and you’re ready.'
+          : 'Your CO₂ figure is on your V5C logbook or any free reg-check site. We turn it into an mpg, then adjust it to your real driving as fill-ups come in.'}
+      </Text>
       <Field label="Registration" value={reg} onChangeText={setReg} placeholder="AB12 CDE" upper />
+      {onLookup ? <Btn kind="quiet" title="Look up a different reg" onPress={onLookup} /> : null}
       <View>
         <Text style={st.fieldLabel}>Fuel</Text>
         <View style={st.seg}>
@@ -260,7 +350,12 @@ function CarScreen({ data, update, onDone }) {
           </>
         ) : <Text style={st.small}>Enter a CO₂ figure or an mpg to see your cost per mile.</Text>}
       </View>
-      <Btn title="Save car" disabled={!off} onPress={() => { update((d) => ({ ...d, car: { reg: reg.trim().toUpperCase(), ...draft } })); onDone(); }} />
+      <Btn title="Save car" disabled={!off} onPress={() => {
+        const id = known ? { make: known.make, model: known.model, colour: known.colour, year: known.year, engineCc: known.engineCc,
+          fuelLabel: known.fuelLabel, mileage: known.mileage || null } : {};
+        update((d) => ({ ...d, car: { reg: reg.trim().toUpperCase(), ...id, ...draft } }));
+        onDone();
+      }} />
     </View>
   );
 }
@@ -630,6 +725,11 @@ const st = StyleSheet.create({
   badge: { width: 34, height: 34, borderRadius: 10, backgroundColor: C.amber, alignItems: 'center', justifyContent: 'center' },
   brand: { color: C.ink, fontSize: 18, fontWeight: '800', fontFamily: SANS },
   plate: { fontFamily: MONO, fontWeight: '700', fontSize: 13, backgroundColor: C.plate, color: '#111', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6, overflow: 'hidden', letterSpacing: 1 },
+  plateBox: { flexDirection: 'row', height: 72, borderRadius: 10, overflow: 'hidden', backgroundColor: C.plate, borderWidth: 2, borderColor: '#1A1A1A' },
+  plateFlag: { width: 40, backgroundColor: '#1E4FA8', alignItems: 'center', justifyContent: 'flex-end', paddingBottom: 8 },
+  plateFlagText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 },
+  plateInput: { flex: 1, minWidth: 0, color: '#111111', fontFamily: MONO, fontWeight: '700', fontSize: 32, textAlign: 'center', letterSpacing: 3 },
+  plateSmall: { alignSelf: 'flex-start', fontFamily: MONO, fontWeight: '700', fontSize: 14, backgroundColor: C.plate, color: '#111', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6, overflow: 'hidden', letterSpacing: 1 },
   h1: { color: C.ink, fontSize: 30, fontWeight: '800', letterSpacing: -0.6, fontFamily: SANS },
   h2: { color: C.ink, fontWeight: '800', fontFamily: SANS },
   body: { color: C.muted, fontSize: 15, lineHeight: 22, fontFamily: SANS },
