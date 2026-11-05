@@ -22,7 +22,7 @@ jobs:
       - run: npm ci
       - run: npm run build:web
         env:
-          EXPO_PUBLIC_API_URL: ${{ vars.API_URL }}
+          EXPO_PUBLIC_API_URL: ${{ vars.API_URL || secrets.API_URL }}
           EXPO_PUBLIC_VEHICLE_LOOKUP_URL: ${{ vars.VEHICLE_LOOKUP_URL }}
           EXPO_PUBLIC_CONTACT: ${{ vars.CONTACT }}
       # Fuel Finder only answers UK traffic, so prices are collected on a UK machine
