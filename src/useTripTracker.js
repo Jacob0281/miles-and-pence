@@ -29,6 +29,7 @@ export function useTripTracker(model) {
   const [station, setStation] = useState(null); // station you seem to be stopped at
   const [stationCount, setStationCount] = useState(null);
   const [stationError, setStationError] = useState(null);
+  const [stationSource, setStationSource] = useState(null); // 'fuelfinder' (live prices) | 'osm'
 
   const r = useRef({});
   const modelRef = useRef(model);
@@ -57,8 +58,10 @@ export function useTripTracker(model) {
     s.stationsLoading = true;
     s.stationsAt = p;
     try {
-      s.stations = await fetchStations(p);
-      setStationCount(s.stations.length);
+      const res = await fetchStations(p);
+      s.stations = res.stations;
+      setStationCount(res.stations.length);
+      setStationSource(res.source);
       setStationError(null);
     } catch (e) {
       s.stationsAt = null; // try again on a later fix
@@ -183,5 +186,18 @@ export function useTripTracker(model) {
 
   const dismissStation = useCallback(() => setStation(null), []);
 
-  return { status, error, miles, litres, elapsed, speedMph, accuracy, station, stationCount, stationError, start, stop, dismissStation };
+  /** Closest known station to where you are now (within `max` metres), or null. */
+  const nearestStation = useCallback((max = 150) => {
+    const s = r.current;
+    const here = s.prevFix || s.lastPos;
+    if (!here || !s.stations) return null;
+    let best = null, bestD = Infinity;
+    for (const st of s.stations) {
+      const d = haversine(st, here);
+      if (d < bestD) { best = st; bestD = d; }
+    }
+    return bestD <= max ? best : null;
+  }, []);
+
+  return { status, error, miles, litres, elapsed, speedMph, accuracy, station, stationCount, stationSource, stationError, start, stop, dismissStation, nearestStation };
 }

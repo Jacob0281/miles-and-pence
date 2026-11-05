@@ -7,6 +7,21 @@ import {
 } from './src/fuel';
 import { loadData, newId, saveData } from './src/store';
 import { useTripTracker } from './src/useTripTracker';
+import { livePrice } from './src/stations';
+
+const ago = (iso) => {
+  if (!iso) return '';
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (!isFinite(mins) || mins < 0) return '';
+  if (mins < 60) return mins + ' min ago';
+  const h = Math.round(mins / 60);
+  return h < 48 ? h + ' hr ago' : Math.round(h / 24) + ' days ago';
+};
+const fuelLabel = (car) => {
+  const diesel = car && car.fuel === 'diesel';
+  const premium = car && car.grade === 'premium';
+  return diesel ? (premium ? 'Premium diesel' : 'Diesel') : premium ? 'Super unleaded' : 'Unleaded';
+};
 
 const C = {
   bg: '#0E1A17', surface: '#16261F', sunk: '#0A1411', line: '#26392F',
@@ -142,8 +157,8 @@ export default function App() {
               addEntry={addEntry} say={say} onFill={() => { setFillStation(null); setScreen('fill'); }} />
           )}
           {screen === 'live' && (
-            <LiveScreen tracker={tracker} baseMpg={baseMpg} k={cal.k} price={price}
-              onEnd={() => finishTrip()} onFuel={(stn) => finishTrip(stn || null)} />
+            <LiveScreen tracker={tracker} baseMpg={baseMpg} k={cal.k} price={price} car={car}
+              onEnd={() => finishTrip()} onFuel={(stn) => finishTrip(stn || tracker.nearestStation() || null)} />
           )}
           {screen === 'fill' && (
             <FillScreen data={data} price={price} station={fillStation} update={update} addEntry={addEntry} say={say}
@@ -191,12 +206,16 @@ function CarScreen({ data, update, onDone }) {
   const c = data.car || {};
   const [reg, setReg] = useState(c.reg || '');
   const [fuel, setFuel] = useState(c.fuel || 'petrol');
+  const [grade, setGrade] = useState(c.grade || 'standard');
   const [co2, setCo2] = useState(c.co2 != null ? String(c.co2) : '');
   const [mpgIn, setMpgIn] = useState(c.mpg != null ? String(c.mpg) : '');
   const [priceIn, setPriceIn] = useState(c.price != null ? String(c.price) : '');
-  const draft = { fuel, co2: num(co2), mpg: num(mpgIn), price: num(priceIn) };
+  const draft = { fuel, grade, co2: num(co2), mpg: num(mpgIn), price: num(priceIn) };
   const off = officialMpg(draft);
   const ppm = pencePerMile(off, draft.price);
+  const grades = fuel === 'diesel'
+    ? [['standard', 'Standard diesel'], ['premium', 'Premium diesel']]
+    : [['standard', 'Unleaded (E10)'], ['premium', 'Super (E5)']];
   return (
     <View style={st.gap}>
       <Brand />
@@ -210,6 +229,17 @@ function CarScreen({ data, update, onDone }) {
             <Pressable key={f} accessibilityRole="button" accessibilityState={{ selected: fuel === f }} onPress={() => setFuel(f)}
               style={[st.segBtn, fuel === f && st.segOn]}>
               <Text style={[st.segText, fuel === f && { color: C.ink }]}>{f === 'petrol' ? 'Petrol' : 'Diesel'}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+      <View>
+        <Text style={st.fieldLabel}>What you usually buy</Text>
+        <View style={st.seg}>
+          {grades.map(([g, t]) => (
+            <Pressable key={g} accessibilityRole="button" accessibilityState={{ selected: grade === g }} onPress={() => setGrade(g)}
+              style={[st.segBtn, grade === g && st.segOn]}>
+              <Text style={[st.segText, grade === g && { color: C.ink }]}>{t}</Text>
             </Pressable>
           ))}
         </View>
@@ -286,7 +316,8 @@ function HomeScreen({ data, mpg, price, cal, tracker, onStart, go, onFill, addEn
   );
 }
 
-function LiveScreen({ tracker, baseMpg, k, price, onEnd, onFuel }) {
+function LiveScreen({ tracker, baseMpg, k, price, car, onEnd, onFuel }) {
+  const stationPrice = livePrice(tracker.station, car);
   const litres = tracker.litres * k;
   const cost = price ? (litres * price) / 100 : null;
   const tripMpg = litres > 0.01 && tracker.miles > 0.1 ? tracker.miles / (litres / LITRES_PER_GALLON) : null;
@@ -305,6 +336,9 @@ function LiveScreen({ tracker, baseMpg, k, price, onEnd, onFuel }) {
         <View style={[st.card, { borderColor: C.amber, borderWidth: 2 }]}>
           <Label style={{ color: C.amber }}>You've stopped at a fuel station</Label>
           <Text style={[st.h2, { fontSize: 22 }]}>Refuelling at {tracker.station.name}?</Text>
+          {stationPrice ? (
+            <Text style={st.body}>{fuelLabel(car)} here: <Text style={{ color: C.amber, fontWeight: '800' }}>{stationPrice}p</Text> a litre</Text>
+          ) : null}
           <View style={st.row}>
             <Btn title="Yes, refuelling" onPress={() => onFuel(tracker.station)} style={st.flex} />
             <Btn kind="quiet" title="No" onPress={tracker.dismissStation} style={st.flex} />
@@ -329,7 +363,7 @@ function LiveScreen({ tracker, baseMpg, k, price, onEnd, onFuel }) {
       </View>
       <Text style={[st.small, { textAlign: 'center' }]}>
         GPS ±{tracker.accuracy != null ? tracker.accuracy + ' m' : '…'}
-        {tracker.stationCount != null ? ' · ' + tracker.stationCount + ' fuel stations nearby' : ''}
+        {tracker.stationCount != null ? ' · ' + tracker.stationCount + ' fuel stations nearby' + (tracker.stationSource === 'fuelfinder' ? ', live prices' : '') : ''}
       </Text>
       {tracker.stationError ? <Text style={[st.small, { textAlign: 'center' }]}>{tracker.stationError}</Text> : null}
       {tracker.error ? <Text style={st.warn}>GPS problem: {tracker.error}</Text> : null}
@@ -341,9 +375,10 @@ function LiveScreen({ tracker, baseMpg, k, price, onEnd, onFuel }) {
 
 function FillScreen({ data, price, station, update, addEntry, say, onDone, onCancel }) {
   const known = station && data.stations[station.id];
+  const live = livePrice(station, data.car);
   const [spend, setSpend] = useState(null);
   const [other, setOther] = useState('');
-  const [p, setP] = useState(String((known && known.lastPrice) || price || ''));
+  const [p, setP] = useState(String(live || (known && known.lastPrice) || price || ''));
   const [odo, setOdo] = useState('');
   const [name, setName] = useState(station ? station.name : '');
   const [full, setFull] = useState(false);
@@ -392,7 +427,11 @@ function FillScreen({ data, price, station, update, addEntry, say, onDone, onCan
 
       <Field label={station ? 'Price here (p per litre)' : 'Price (p per litre)'} value={p} onChangeText={setP} placeholder="139.9" keyboard="decimal-pad" />
       <Text style={[st.small, { marginTop: -8 }]}>
-        {known && known.lastPrice ? 'Last time here you paid ' + known.lastPrice + 'p. Check the pump and change it if needed.' : 'Check the pump display and change this if needed.'}
+        {live
+          ? 'Live ' + fuelLabel(data.car).toLowerCase() + ' price from Fuel Finder' + (station.updated ? ', updated ' + ago(station.updated) : '') + '. Change it if the pump says otherwise.'
+          : known && known.lastPrice
+            ? 'Last time here you paid ' + known.lastPrice + 'p. Check the pump and change it if needed.'
+            : 'Check the pump display and change this if needed.'}
       </Text>
       {!station ? <Field label="Station" value={name} onChangeText={setName} placeholder="e.g. Tesco, Leigh" /> : null}
       <View style={st.switchRow}>

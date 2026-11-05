@@ -2,6 +2,8 @@ name: Publish website
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '7,37 * * * *' # refresh fuel prices about every 30 minutes
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,6 +23,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build:web
+      - name: Fetch live fuel prices
+        continue-on-error: true
+        env:
+          FUEL_FINDER_CLIENT_ID: ${{ secrets.FUEL_FINDER_CLIENT_ID }}
+          FUEL_FINDER_CLIENT_SECRET: ${{ secrets.FUEL_FINDER_CLIENT_SECRET }}
+        run: node scripts/fetch-prices.mjs dist/prices.json
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
