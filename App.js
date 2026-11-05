@@ -136,7 +136,7 @@ export default function App() {
     if (r.miles >= 0.05) {
       addEntry({ kind: 'trip', date: todayKey(), source: 'gps', name: station ? 'To ' + station.name : '',
         miles: Math.round(r.miles * 10) / 10, litres: r.litres, seconds: r.seconds, idleSeconds: r.idleSeconds,
-        bands: r.bands, start: r.start, end: r.end });
+        bands: r.bands, gapMiles: r.gapMiles, start: r.start, end: r.end });
       say('Trip saved: ' + r.miles.toFixed(1) + ' mi');
     } else say('Trip too short to save');
     if (station !== undefined) {
@@ -301,7 +301,10 @@ function HomeScreen({ data, mpg, price, cal, tracker, onStart, go, onFill, addEn
       ) : null}
       {tracker.error ? <Text style={st.warn}>GPS problem: {tracker.error}</Text> : null}
       {insecure ? <Text style={st.warn}>GPS only works when this page is opened from its https:// address.</Text> : null}
-      <Text style={[st.small, { textAlign: 'center' }]}>Keep this open on a phone mount. The screen stays on during a trip.</Text>
+      <Text style={[st.small, { textAlign: 'center' }]}>
+        Keep this open on a phone mount. If the phone locks, unlock it and the trip picks up again, filling in the miles you missed.
+        {Platform.OS === 'web' ? ' For best results set Settings › Display & Brightness › Auto-Lock to Never while driving.' : ''}
+      </Text>
       {needOdo ? <OdoPrompt addEntry={addEntry} say={say} /> : null}
       <View style={st.stats}>
         <Stat label="Per mile" value={ppm ? ppm.toFixed(1) + 'p' : '–'} sub={price ? 'at ' + price + 'p/L' : 'add a price'} />
@@ -366,6 +369,15 @@ function LiveScreen({ tracker, baseMpg, k, price, car, onEnd, onFuel }) {
         {tracker.stationCount != null ? ' · ' + tracker.stationCount + ' fuel stations nearby' + (tracker.stationSource === 'fuelfinder' ? ', live prices' : '') : ''}
       </Text>
       {tracker.stationError ? <Text style={[st.small, { textAlign: 'center' }]}>{tracker.stationError}</Text> : null}
+      {tracker.lastGap && Date.now() - tracker.lastGap.at < 120000 ? (
+        <View style={[st.card, { paddingVertical: 12 }]}>
+          <Text style={[st.body, { color: C.ink }]}>
+            GPS was paused for {tracker.lastGap.minutes ? tracker.lastGap.minutes + ' min' : 'a moment'}. Added an estimated {tracker.lastGap.miles.toFixed(1)} mi.
+          </Text>
+        </View>
+      ) : tracker.gapMiles >= 0.1 ? (
+        <Text style={[st.small, { textAlign: 'center' }]}>{tracker.gapMiles.toFixed(1)} mi of this trip estimated while GPS was paused</Text>
+      ) : null}
       {tracker.error ? <Text style={st.warn}>GPS problem: {tracker.error}</Text> : null}
       <Btn kind="light" title="I'm at a fuel station" onPress={() => onFuel(tracker.station || null)} />
       <Btn kind="quiet" title="End trip" onPress={onEnd} />
@@ -572,7 +584,8 @@ function HistoryScreen({ data, cal, price, update, say, go }) {
           const mix = b && e.miles ? ' · ' + [['town', 'town'], ['aroad', 'A-road'], ['motorway', 'mway']]
             .filter(([kk]) => b[kk] >= 0.1).map(([kk, n]) => Math.round((b[kk] / e.miles) * 100) + '% ' + n).join(', ') : '';
           meta = niceDate(e.date) + ' · ' + e.miles + ' mi' + (e.seconds ? ' · ' + Math.round(e.seconds / 60) + ' min' : '') +
-            (tMpg ? ' · ' + tMpg.toFixed(0) + ' mpg' : '') + (e.source === 'gps' ? mix : ' · by hand');
+            (tMpg ? ' · ' + tMpg.toFixed(0) + ' mpg' : '') + (e.source === 'gps' ? mix : ' · by hand') +
+            (e.gapMiles >= 0.1 ? ' · ' + e.gapMiles.toFixed(1) + ' mi estimated (GPS paused)' : '');
           amount = f.cost != null ? gbp(f.cost) : '–';
         } else if (e.kind === 'fill') {
           title = e.station || 'Fill-up';

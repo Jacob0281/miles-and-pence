@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import * as Location from 'expo-location';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { band, haversine, idleLitres, METRES_PER_MILE, segmentLitres } from './fuel';
@@ -13,6 +14,12 @@ const STOP_SECONDS = 40; // stopped this long at a station → ask about fuel
 const STATION_RADIUS_M = 60; // how close counts as "at" a station
 const STATION_REFRESH_M = 2500; // reload nearby stations after moving this far
 const KEEP_AWAKE_TAG = 'trip';
+// When GPS pauses (screen locked, app in the background) and later resumes somewhere else,
+// fill the gap with the straight-line distance scaled up for real roads.
+const GAP_SECONDS = 20; // a pause longer than this counts as a gap
+const GAP_MIN_M = 100; // ...if you moved at least this far
+const ROAD_FACTOR = 1.25; // roads are ~25% longer than a straight line on average
+const WATCH_OPTIONS = { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 0 };
 
 /**
  * Tracks one trip with the phone's GPS while the app is open.
@@ -30,6 +37,8 @@ export function useTripTracker(model) {
   const [stationCount, setStationCount] = useState(null);
   const [stationError, setStationError] = useState(null);
   const [stationSource, setStationSource] = useState(null); // 'fuelfinder' (live prices) | 'osm'
+  const [gapMiles, setGapMiles] = useState(0); // miles estimated across GPS pauses
+  const [lastGap, setLastGap] = useState(null); // { miles, minutes } of the most recent gap
 
   const r = useRef({});
   const modelRef = useRef(model);
@@ -90,15 +99,23 @@ export function useTripTracker(model) {
       const dt = Math.max(1, (p.t - s.lastPos.t) / 1000);
       if (d / dt > MAX_SPEED_MS) return; // GPS jump
       if (d >= MIN_STEP_M) {
-        const ms = reported != null ? reported : d / dt;
+        const pause = prev ? (p.t - prev.t) / 1000 : 0;
+        const gap = pause > GAP_SECONDS && d >= GAP_MIN_M;
+        const dist = gap ? d * ROAD_FACTOR : d;
+        const ms = gap ? dist / dt : reported != null ? reported : d / dt;
         const mph = ms * 2.23694;
-        s.metres += d;
-        s.litres += segmentLitres(d, mph, m.baseMpg);
-        s.bands[band(mph)] += d / METRES_PER_MILE;
+        s.metres += dist;
+        s.litres += segmentLitres(dist, mph, m.baseMpg);
+        s.bands[band(mph)] += dist / METRES_PER_MILE;
         s.lastPos = p;
+        if (gap) {
+          s.gapMetres += dist;
+          setGapMiles(s.gapMetres / METRES_PER_MILE);
+          setLastGap({ miles: dist / METRES_PER_MILE, minutes: Math.round(pause / 60), at: Date.now() });
+        }
         setMiles(s.metres / METRES_PER_MILE);
         setLitres(s.litres);
-        setSpeedMph(mph);
+        setSpeedMph(gap ? (reported != null ? reported * 2.23694 : mph) : mph);
       } else if (prev && (reported == null || reported < STILL_MS)) {
         const idle = Math.min(30, (p.t - prev.t) / 1000);
         s.idleSeconds += idle;
@@ -142,19 +159,15 @@ export function useTripTracker(model) {
       }
       const keepStations = r.current.stations;
       const keepAt = r.current.stationsAt;
-      r.current = { metres: 0, litres: 0, idleSeconds: 0, bands: { town: 0, aroad: 0, motorway: 0 },
+      r.current = { metres: 0, litres: 0, idleSeconds: 0, gapMetres: 0, bands: { town: 0, aroad: 0, motorway: 0 },
         stations: keepStations, stationsAt: keepAt, startedAt: Date.now() };
-      setMiles(0); setLitres(0); setElapsed(0); setSpeedMph(0); setStation(null);
+      setMiles(0); setLitres(0); setElapsed(0); setSpeedMph(0); setStation(null); setGapMiles(0); setLastGap(null);
       try {
         await activateKeepAwakeAsync(KEEP_AWAKE_TAG);
         awake.current = true;
       } catch (e) {}
       timer.current = setInterval(() => setElapsed(Math.round((Date.now() - r.current.startedAt) / 1000)), 1000);
-      sub.current = await Location.watchPositionAsync(
-        { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 0 },
-        onFix,
-        (reason) => setError(String(reason))
-      );
+      sub.current = await Location.watchPositionAsync(WATCH_OPTIONS, onFix, (reason) => setError(String(reason)));
       setStatus('tracking');
       return true;
     } catch (e) {
@@ -175,6 +188,7 @@ export function useTripTracker(model) {
       litres: round(s.litres, 1000),
       seconds: Math.round((Date.now() - s.startedAt) / 1000),
       idleSeconds: Math.round(s.idleSeconds),
+      gapMiles: round(s.gapMetres / METRES_PER_MILE),
       bands: { town: round(s.bands.town), aroad: round(s.bands.aroad), motorway: round(s.bands.motorway) },
       start: s.startPoint || null,
       end: s.lastPos || null,
@@ -183,6 +197,30 @@ export function useTripTracker(model) {
     setStation(null);
     return result;
   }, [cleanup]);
+
+  // Coming back to the app mid-trip: the browser may have dropped GPS and the screen-awake
+  // lock while it was hidden, so start both again. The next fix fills the gap.
+  const statusRef = useRef(status);
+  statusRef.current = status;
+  const resume = useCallback(async () => {
+    if (statusRef.current !== 'tracking') return;
+    try {
+      if (sub.current) sub.current.remove();
+      sub.current = await Location.watchPositionAsync(WATCH_OPTIONS, onFix, (reason) => setError(String(reason)));
+    } catch (e) {
+      setError(e && e.message ? e.message : String(e));
+    }
+    try {
+      await activateKeepAwakeAsync(KEEP_AWAKE_TAG);
+      awake.current = true;
+    } catch (e) {}
+  }, [onFix]);
+  useEffect(() => {
+    const subApp = AppState.addEventListener('change', (state) => {
+      if (state === 'active') resume();
+    });
+    return () => subApp.remove();
+  }, [resume]);
 
   const dismissStation = useCallback(() => setStation(null), []);
 
@@ -199,5 +237,5 @@ export function useTripTracker(model) {
     return bestD <= max ? best : null;
   }, []);
 
-  return { status, error, miles, litres, elapsed, speedMph, accuracy, station, stationCount, stationSource, stationError, start, stop, dismissStation, nearestStation };
+  return { status, error, miles, litres, elapsed, speedMph, accuracy, station, gapMiles, lastGap, stationCount, stationSource, stationError, start, stop, dismissStation, nearestStation };
 }
