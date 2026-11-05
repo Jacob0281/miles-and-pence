@@ -1,3 +1,4 @@
+// Deployed by .github/workflows/worker.yml
 // Miles & Pence vehicle lookup — a small Cloudflare Worker.
 // GET /vehicle?reg=AB12CDE  →  { found, reg, make, model, colour, fuel, fuelLabel, engineCc, year, co2, mileage }
 //
