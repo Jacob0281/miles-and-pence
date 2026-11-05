@@ -10,6 +10,35 @@ const REFRESH_MS = 20 * 60 * 1000;
 
 let cache = null; // { at, data }
 
+const KEEP_UPPER = new Set(['BP', 'MFG', 'EG', 'JET', 'SGN', 'MRH', 'UK', 'MSA', 'BWOC', 'TFL']);
+const SMALL = new Set(['and', 'of', 'the', 'at', 'on']);
+/** "ATHERTON SUPERSTORE - PETROL FILLING STATION" → "Atherton Superstore" */
+export function tidyName(raw) {
+  if (!raw) return 'Fuel station';
+  let s = String(raw)
+    .replace(/\s*[-–,]\s*(petrol\s+)?(filling|service)\s+station\s*$/i, '')
+    .replace(/\s*\bP\.?F\.?S\.?\s*$/i, '')
+    .replace(/\s+(ltd|limited)\.?$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (s === s.toUpperCase()) {
+    s = s.toLowerCase().split(' ').map((w, i) => {
+      const up = w.toUpperCase();
+      if (KEEP_UPPER.has(up)) return up;
+      if (i > 0 && SMALL.has(w)) return w;
+      if (w === 'sainsburys') return "Sainsbury's";
+      if (w === 'morrisons' || w === 'tesco' || w === 'asda') return w[0].toUpperCase() + w.slice(1);
+      return w.replace(/(^|[-'(])([a-z])/g, (m, a, b) => a + b.toUpperCase());
+    }).join(' ');
+  }
+  return s || 'Fuel station';
+}
+function titlePlace(t) {
+  if (!t) return '';
+  const town = t.replace(/(^|\s+)[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}$/i, '').trim(); // drop the postcode
+  return town ? tidyName(town) : '';
+}
+
 /** The full Fuel Finder list, or null if it isn't published yet. */
 export async function loadPriceList(force = false) {
   if (!force && cache && Date.now() - cache.at < REFRESH_MS) return cache.data;
@@ -20,7 +49,11 @@ export async function loadPriceList(force = false) {
     const data = {
       fetchedAt: json.fetchedAt,
       stations: (json.stations || []).map((s) => ({
-        id: 'ff-' + s.id, name: [s.n, s.t && s.t.split(' ')[0]].filter(Boolean).join(', '),
+        id: 'ff-' + s.id,
+        name: (() => {
+          const n = tidyName(s.n), place = titlePlace(s.t);
+          return place && !n.toLowerCase().includes(place.toLowerCase()) ? n + ', ' + place : n;
+        })(),
         latitude: s.la, longitude: s.lo, prices: s.p || {}, updated: s.u || json.fetchedAt, closed: !!s.x,
       })),
     };
@@ -36,17 +69,18 @@ export async function loadPriceList(force = false) {
 export function fuelCodeFor(car) {
   const diesel = car && car.fuel === 'diesel';
   const premium = car && car.grade === 'premium';
-  if (diesel) return premium ? ['SDV', 'SUPER_DIESEL', 'B7_PREMIUM'] : ['B7', 'B7_STANDARD', 'DIESEL'];
-  return premium ? ['E5', 'SUPER_UNLEADED'] : ['E10', 'UNLEADED', 'E5'];
+  // Fuel Finder codes: E10, E5, B7_STANDARD, B7_PREMIUM, B10, HVO. Earlier entries win.
+  if (diesel) return premium ? ['B7_PREMIUM', 'SDV'] : ['B7_STANDARD', 'B7'];
+  return premium ? ['E5'] : ['E10', 'E5'];
 }
 
 /** Live price (p/L) for this car at a station, or null. */
 export function livePrice(station, car) {
   if (!station || !station.prices) return null;
-  const keys = Object.keys(station.prices);
+  const byCode = {};
+  for (const k of Object.keys(station.prices)) byCode[k.toUpperCase()] = station.prices[k];
   for (const code of fuelCodeFor(car)) {
-    const k = keys.find((x) => x.toUpperCase() === code || x.toUpperCase().startsWith(code + '_'));
-    if (k && station.prices[k] > 0) return station.prices[k];
+    if (byCode[code] > 0) return byCode[code];
   }
   return null;
 }

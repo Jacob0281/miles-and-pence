@@ -248,7 +248,7 @@ function CarScreen({ data, update, onDone }) {
         <Field style={st.flex} label="CO₂ (g/km)" value={co2} onChangeText={setCo2} placeholder="e.g. 117" keyboard="decimal-pad" />
         <Field style={st.flex} label="Or your own mpg" value={mpgIn} onChangeText={setMpgIn} placeholder="Overrides CO₂" keyboard="decimal-pad" />
       </View>
-      <Field label="Usual price (p per litre)" value={priceIn} onChangeText={setPriceIn} placeholder="e.g. 139.9" keyboard="decimal-pad" />
+      <Field label="Usual price (p per litre)" value={priceIn} onChangeText={setPriceIn} placeholder="e.g. 169.9" keyboard="decimal-pad" />
       <View style={st.card}>
         {off ? (
           <>
@@ -425,7 +425,7 @@ function FillScreen({ data, price, station, update, addEntry, say, onDone, onCan
         <Text style={st.small}>{litres ? 'litres added' : 'Pick an amount to see the litres'}</Text>
       </View>
 
-      <Field label={station ? 'Price here (p per litre)' : 'Price (p per litre)'} value={p} onChangeText={setP} placeholder="139.9" keyboard="decimal-pad" />
+      <Field label={station ? 'Price here (p per litre)' : 'Price (p per litre)'} value={p} onChangeText={setP} placeholder="169.9" keyboard="decimal-pad" />
       <Text style={[st.small, { marginTop: -8 }]}>
         {live
           ? 'Live ' + fuelLabel(data.car).toLowerCase() + ' price from Fuel Finder' + (station.updated ? ', updated ' + ago(station.updated) : '') + '. Change it if the pump says otherwise.'
