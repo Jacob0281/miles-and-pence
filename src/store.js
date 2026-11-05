@@ -1,14 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const KEY = 'milesandpence:v1';
-const EMPTY = { car: null, entries: [], spots: [] };
+const EMPTY = { car: null, entries: [], stations: {} };
 
 export async function loadData() {
   try {
     const raw = await AsyncStorage.getItem(KEY);
     if (!raw) return EMPTY;
     const d = JSON.parse(raw);
-    return { car: d.car || null, entries: d.entries || [], spots: d.spots || [] };
+    return { car: d.car || null, entries: d.entries || [], stations: d.stations || {} };
   } catch (e) {
     return EMPTY;
   }

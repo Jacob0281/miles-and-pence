@@ -2,11 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import {
-  costFor, currentMpg, currentPrice, gbp, haversine, litresFor, monthSummary,
-  officialMpg, pencePerMile, realMpg, sortEntries, todayKey,
+  calibrate, costFor, currentMpg, currentPrice, gbp, LITRES_PER_GALLON, monthSummary, mpgAtSpeed,
+  needsOdoThisMonth, odoCheck, officialMpg, pencePerMile, sortEntries, todayKey, tripFuel,
 } from './src/fuel';
 import { loadData, newId, saveData } from './src/store';
-import { currentPosition, useTripTracker } from './src/useTripTracker';
+import { useTripTracker } from './src/useTripTracker';
 
 const C = {
   bg: '#0E1A17', surface: '#16261F', sunk: '#0A1411', line: '#26392F',
@@ -15,9 +15,10 @@ const C = {
 };
 const MONO = Platform.select({ web: '"JetBrains Mono", ui-monospace, Menlo, monospace', ios: 'Menlo', default: 'monospace' });
 const SANS = Platform.select({ web: 'Manrope, system-ui, -apple-system, sans-serif', default: undefined });
+const SPEND_CHIPS = [10, 20, 30, 40, 50, 60];
 
 const num = (v) => {
-  const n = parseFloat(String(v).replace(',', '.'));
+  const n = parseFloat(String(v).replace(',', '.').replace('£', ''));
   return isFinite(n) ? n : null;
 };
 const fmtTime = (s) => {
@@ -25,6 +26,7 @@ const fmtTime = (s) => {
   return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(sec).padStart(2, '0');
 };
 const niceDate = (d) => new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+const monthName = () => new Date().toLocaleString('en-GB', { month: 'long' });
 
 // ---------- small UI pieces ----------
 function Btn({ title, onPress, kind = 'primary', disabled, style }) {
@@ -64,14 +66,19 @@ export default function App() {
   const [data, setData] = useState(null);
   const [screen, setScreen] = useState('home');
   const [toast, setToast] = useState(null);
-  const [fillPrefill, setFillPrefill] = useState(null);
+  const [fillStation, setFillStation] = useState(null);
   const toastTimer = useRef(null);
-  const tracker = useTripTracker(data ? data.spots : []);
+
+  const car = data ? data.car : null;
+  const entries = data ? data.entries : [];
+  const cal = useMemo(() => calibrate(car, entries), [car, entries]);
+  const baseMpg = officialMpg(car) || cal.realMpg;
+  const tracker = useTripTracker({ baseMpg, fuel: (car && car.fuel) || 'petrol' });
 
   useEffect(() => {
     loadData().then((d) => {
       setData(d);
-      if (!officialMpg(d.car) && !realMpg(d.entries)) setScreen('car');
+      if (!officialMpg(d.car)) setScreen('car');
     });
   }, []);
 
@@ -88,43 +95,42 @@ export default function App() {
     }
   }, []);
 
-  const update = (fn) => {
-    setData((prev) => {
-      const next = fn(prev);
-      saveData(next);
-      return next;
-    });
-  };
+  const update = (fn) => setData((prev) => {
+    const next = fn(prev);
+    saveData(next);
+    return next;
+  });
   const say = (msg) => {
     setToast(msg);
     clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 2500);
+    toastTimer.current = setTimeout(() => setToast(null), 2600);
   };
 
   if (!data) return <View style={st.root} />;
 
-  const mpg = currentMpg(data.car, data.entries);
-  const price = currentPrice(data.car, data.entries);
-
+  const price = currentPrice(car, entries);
+  const mpg = currentMpg(car, entries);
   const addEntry = (e) => update((d) => ({ ...d, entries: [...d.entries, { id: newId(), createdAt: Date.now(), ...e }] }));
 
   const startTrip = async () => {
     const ok = await tracker.start();
     if (ok) setScreen('live');
   };
-  const finishTrip = (thenScreen, spot) => {
+  const finishTrip = (station) => {
     const r = tracker.stop();
     if (r.miles >= 0.05) {
-      addEntry({ kind: 'trip', date: todayKey(), miles: Math.round(r.miles * 10) / 10, seconds: r.seconds, source: 'gps',
-        name: spot ? 'To ' + spot.name : '', start: r.start, end: r.end });
+      addEntry({ kind: 'trip', date: todayKey(), source: 'gps', name: station ? 'To ' + station.name : '',
+        miles: Math.round(r.miles * 10) / 10, litres: r.litres, seconds: r.seconds, idleSeconds: r.idleSeconds,
+        bands: r.bands, start: r.start, end: r.end });
       say('Trip saved: ' + r.miles.toFixed(1) + ' mi');
     } else say('Trip too short to save');
-    if (thenScreen === 'fill') {
-      setFillPrefill({ station: spot ? spot.name : '', spotId: spot ? spot.id : null });
+    if (station !== undefined) {
+      setFillStation(station);
       setScreen('fill');
-    } else setScreen(thenScreen);
+    } else setScreen('history');
   };
 
+  const showNav = screen === 'home' || screen === 'history';
   return (
     <View style={st.root}>
       <StatusBar style="light" />
@@ -132,26 +138,29 @@ export default function App() {
         <View style={st.col}>
           {screen === 'car' && <CarScreen data={data} update={update} onDone={() => { say('Car saved'); setScreen('home'); }} />}
           {screen === 'home' && (
-            <HomeScreen data={data} mpg={mpg} price={price} tracker={tracker} onStart={startTrip}
-              go={setScreen} onFill={() => { setFillPrefill(null); setScreen('fill'); }} />
+            <HomeScreen data={data} mpg={mpg} price={price} cal={cal} tracker={tracker} onStart={startTrip} go={setScreen}
+              addEntry={addEntry} say={say} onFill={() => { setFillStation(null); setScreen('fill'); }} />
           )}
           {screen === 'live' && (
-            <LiveScreen tracker={tracker} mpg={mpg} price={price}
-              onEnd={() => finishTrip('history')}
-              onFuel={() => finishTrip('fill', tracker.atSpot)} />
+            <LiveScreen tracker={tracker} baseMpg={baseMpg} k={cal.k} price={price}
+              onEnd={() => finishTrip()} onFuel={(stn) => finishTrip(stn || null)} />
           )}
           {screen === 'fill' && (
-            <FillScreen data={data} price={price} prefill={fillPrefill} update={update} addEntry={addEntry} say={say}
+            <FillScreen data={data} price={price} station={fillStation} update={update} addEntry={addEntry} say={say}
               onDone={() => setScreen('history')} onCancel={() => setScreen('home')} />
           )}
           {screen === 'manual' && (
             <ManualTrip mpg={mpg} price={price} onSave={(t) => { addEntry(t); say('Trip saved'); setScreen('history'); }}
               onCancel={() => setScreen('home')} />
           )}
-          {screen === 'history' && <HistoryScreen data={data} mpg={mpg} price={price} update={update} say={say} />}
+          {screen === 'odo' && (
+            <OdoScreen data={data} onSave={(o) => { addEntry({ kind: 'odo', date: todayKey(), odo: o }); say('Odometer saved'); setScreen('history'); }}
+              onCancel={() => setScreen('history')} />
+          )}
+          {screen === 'history' && <HistoryScreen data={data} cal={cal} price={price} update={update} say={say} go={setScreen} />}
         </View>
       </ScrollView>
-      {screen !== 'live' && screen !== 'car' && (
+      {showNav && (
         <View style={st.nav}>
           {[['home', 'Home'], ['history', 'History'], ['car', 'Car']].map(([k, t]) => (
             <Pressable key={k} accessibilityRole="button" onPress={() => setScreen(k)} style={st.navBtn}>
@@ -188,15 +197,11 @@ function CarScreen({ data, update, onDone }) {
   const draft = { fuel, co2: num(co2), mpg: num(mpgIn), price: num(priceIn) };
   const off = officialMpg(draft);
   const ppm = pencePerMile(off, draft.price);
-  const save = () => {
-    update((d) => ({ ...d, car: { reg: reg.trim().toUpperCase(), ...draft } }));
-    onDone();
-  };
   return (
     <View style={st.gap}>
       <Brand />
       <Text style={st.h1}>{data.car ? 'Your car' : 'What do you drive?'}</Text>
-      <Text style={st.body}>Your CO₂ figure is on your V5C logbook or any free reg-check site. We turn it into an mpg until your fill-ups give us the real one.</Text>
+      <Text style={st.body}>Your CO₂ figure is on your V5C logbook or any free reg-check site. We turn it into an mpg, then adjust it to your real driving as fill-ups come in.</Text>
       <Field label="Registration" value={reg} onChangeText={setReg} placeholder="AB12 CDE" upper />
       <View>
         <Text style={st.fieldLabel}>Fuel</Text>
@@ -219,30 +224,46 @@ function CarScreen({ data, update, onDone }) {
           <>
             <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
               <Mono style={{ fontSize: 44, fontWeight: '700', color: C.amber }}>{off.toFixed(1)}</Mono>
-              <Text style={[st.body, { color: C.ink, fontWeight: '700' }]}>mpg</Text>
+              <Text style={[st.body, { color: C.ink, fontWeight: '700' }]}>mpg official</Text>
             </View>
             <Text style={st.small}>{ppm ? 'About ' + ppm.toFixed(1) + 'p a mile at ' + draft.price + 'p/L' : 'Add a price to see cost per mile'}</Text>
           </>
         ) : <Text style={st.small}>Enter a CO₂ figure or an mpg to see your cost per mile.</Text>}
       </View>
-      <Btn title="Save car" onPress={save} disabled={!off} />
+      <Btn title="Save car" disabled={!off} onPress={() => { update((d) => ({ ...d, car: { reg: reg.trim().toUpperCase(), ...draft } })); onDone(); }} />
     </View>
   );
 }
 
-function HomeScreen({ data, mpg, price, tracker, onStart, go, onFill }) {
+function OdoPrompt({ addEntry, say }) {
+  const [odo, setOdo] = useState('');
+  const v = num(odo);
+  return (
+    <View style={[st.card, { borderColor: C.amber }]}>
+      <Label>Monthly odometer check</Label>
+      <Text style={st.body}>What does your mileage say today? Once a month keeps your figures honest and catches trips the GPS missed.</Text>
+      <View style={[st.row, { alignItems: 'flex-end' }]}>
+        <Field style={st.flex} label="Odometer (miles)" value={odo} onChangeText={setOdo} placeholder="e.g. 48213" keyboard="number-pad" />
+        <Btn title="Save" disabled={!v} onPress={() => { addEntry({ kind: 'odo', date: todayKey(), odo: Math.round(v) }); say('Odometer saved'); }} style={{ minWidth: 96 }} />
+      </View>
+    </View>
+  );
+}
+
+function HomeScreen({ data, mpg, price, cal, tracker, onStart, go, onFill, addEntry, say }) {
   const s = monthSummary(data.car, data.entries, todayKey().slice(0, 7));
-  const real = realMpg(data.entries);
   const ppm = pencePerMile(mpg, price);
-  const month = new Date().toLocaleString('en-GB', { month: 'long' });
   const insecure = Platform.OS === 'web' && typeof window !== 'undefined' && !window.isSecureContext;
+  const needOdo = needsOdoThisMonth(data.entries, todayKey().slice(0, 7));
   return (
     <View style={st.gap}>
       <Brand reg={data.car && data.car.reg} />
       <View>
-        <Label>{month} so far</Label>
+        <Label>{monthName()} so far</Label>
         <Mono style={{ fontSize: 54, fontWeight: '700', letterSpacing: -2 }}>{gbp(s.est)}</Mono>
-        <Text style={st.body}>{s.miles ? Math.round(s.miles * 10) / 10 + ' miles logged' : 'No trips yet this month'}</Text>
+        <Text style={st.body}>
+          {s.miles ? Math.round(s.miles * 10) / 10 + ' miles · ' + s.litres.toFixed(1) + ' litres' + (s.mpg ? ' · ' + s.mpg.toFixed(1) + ' mpg' : '') : 'No trips yet this month'}
+        </Text>
       </View>
       <Btn title={tracker.status === 'starting' ? 'Finding you…' : 'Start a trip'} onPress={onStart} disabled={tracker.status === 'starting'} style={{ height: 64 }} />
       {tracker.status === 'denied' ? (
@@ -250,10 +271,12 @@ function HomeScreen({ data, mpg, price, tracker, onStart, go, onFill }) {
       ) : null}
       {tracker.error ? <Text style={st.warn}>GPS problem: {tracker.error}</Text> : null}
       {insecure ? <Text style={st.warn}>GPS only works when this page is opened from its https:// address.</Text> : null}
-      <Text style={[st.small, { textAlign: 'center' }]}>Keep this page open with the phone on a mount. The screen stays on while a trip runs.</Text>
+      <Text style={[st.small, { textAlign: 'center' }]}>Keep this open on a phone mount. The screen stays on during a trip.</Text>
+      {needOdo ? <OdoPrompt addEntry={addEntry} say={say} /> : null}
       <View style={st.stats}>
         <Stat label="Per mile" value={ppm ? ppm.toFixed(1) + 'p' : '–'} sub={price ? 'at ' + price + 'p/L' : 'add a price'} />
-        <Stat label={real ? 'Your real mpg' : 'Official mpg'} value={mpg ? mpg.toFixed(1) : '–'} sub={real ? 'from your fill-ups' : 'until 2 full fill-ups'} />
+        <Stat label={cal.realMpg ? 'Your real mpg' : 'Official mpg'} value={mpg ? mpg.toFixed(1) : '–'}
+          sub={cal.realMpg ? 'from your fill-ups' : 'until 2 full fill-ups'} />
       </View>
       <View style={st.row}>
         <Btn kind="quiet" title="Log a fill-up" onPress={onFill} style={st.flex} />
@@ -263,8 +286,13 @@ function HomeScreen({ data, mpg, price, tracker, onStart, go, onFill }) {
   );
 }
 
-function LiveScreen({ tracker, mpg, price, onEnd, onFuel }) {
-  const cost = costFor(tracker.miles, mpg, price);
+function LiveScreen({ tracker, baseMpg, k, price, onEnd, onFuel }) {
+  const litres = tracker.litres * k;
+  const cost = price ? (litres * price) / 100 : null;
+  const tripMpg = litres > 0.01 && tracker.miles > 0.1 ? tracker.miles / (litres / LITRES_PER_GALLON) : null;
+  const milesPerLitre = litres > 0.01 && tracker.miles > 0.1 ? tracker.miles / litres : null;
+  const moving = tracker.speedMph >= 3;
+  const nowMpg = moving ? mpgAtSpeed(tracker.speedMph, baseMpg, k) : null;
   const gpsOk = tracker.accuracy != null && tracker.accuracy <= 35;
   return (
     <View style={st.gap}>
@@ -272,94 +300,111 @@ function LiveScreen({ tracker, mpg, price, onEnd, onFuel }) {
         <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: gpsOk ? C.good : C.amber }} />
         <Label>{gpsOk ? 'Trip in progress' : 'Waiting for a good GPS signal'}</Label>
       </View>
-      <View style={{ alignItems: 'center', paddingVertical: 28, gap: 4 }}>
+
+      {tracker.station ? (
+        <View style={[st.card, { borderColor: C.amber, borderWidth: 2 }]}>
+          <Label style={{ color: C.amber }}>You've stopped at a fuel station</Label>
+          <Text style={[st.h2, { fontSize: 22 }]}>Refuelling at {tracker.station.name}?</Text>
+          <View style={st.row}>
+            <Btn title="Yes, refuelling" onPress={() => onFuel(tracker.station)} style={st.flex} />
+            <Btn kind="quiet" title="No" onPress={tracker.dismissStation} style={st.flex} />
+          </View>
+        </View>
+      ) : null}
+
+      <View style={{ alignItems: 'center', paddingVertical: 20, gap: 4 }}>
         <Text style={st.body}>This trip has cost</Text>
         <Mono style={{ fontSize: 76, fontWeight: '700', color: C.amber, letterSpacing: -3 }}>{cost != null ? gbp(cost) : '–'}</Mono>
         <Text style={st.small}>{fmtTime(tracker.elapsed)} driving</Text>
       </View>
-      {tracker.atSpot ? (
-        <View style={[st.card, { borderColor: C.amber }]}>
-          <Text style={[st.h2, { fontSize: 18 }]}>Stopped at {tracker.atSpot.name}?</Text>
-          <Text style={st.small}>End the trip here and log what you put in.</Text>
-          <View style={st.row}>
-            <Btn title="Log fill-up" onPress={onFuel} style={st.flex} />
-            <Btn kind="quiet" title="Not now" onPress={tracker.dismissSpot} style={st.flex} />
-          </View>
-        </View>
-      ) : null}
       <View style={st.stats3}>
         <Stat label="Miles" value={tracker.miles.toFixed(1)} />
-        <Stat label="Litres" value={litresFor(tracker.miles, mpg).toFixed(2)} />
+        <Stat label="Litres" value={litres.toFixed(2)} />
         <Stat label="mph" value={String(Math.round(tracker.speedMph))} />
       </View>
-      <Text style={[st.small, { textAlign: 'center' }]}>GPS accuracy: {tracker.accuracy != null ? '±' + tracker.accuracy + ' m' : 'waiting…'}</Text>
+      <View style={st.stats3}>
+        <Stat label="Right now" value={nowMpg ? Math.round(nowMpg) : 'Idle'} sub={nowMpg ? 'mpg at this speed' : 'engine running'} />
+        <Stat label="Trip mpg" value={tripMpg ? tripMpg.toFixed(1) : '–'} />
+        <Stat label="Per litre" value={milesPerLitre ? milesPerLitre.toFixed(1) : '–'} sub="miles" />
+      </View>
+      <Text style={[st.small, { textAlign: 'center' }]}>
+        GPS ±{tracker.accuracy != null ? tracker.accuracy + ' m' : '…'}
+        {tracker.stationCount != null ? ' · ' + tracker.stationCount + ' fuel stations nearby' : ''}
+      </Text>
+      {tracker.stationError ? <Text style={[st.small, { textAlign: 'center' }]}>{tracker.stationError}</Text> : null}
       {tracker.error ? <Text style={st.warn}>GPS problem: {tracker.error}</Text> : null}
-      <Btn kind="light" title="I'm at a fuel station" onPress={onFuel} />
+      <Btn kind="light" title="I'm at a fuel station" onPress={() => onFuel(tracker.station || null)} />
       <Btn kind="quiet" title="End trip" onPress={onEnd} />
     </View>
   );
 }
 
-function FillScreen({ data, price, prefill, update, addEntry, say, onDone, onCancel }) {
-  const [date] = useState(todayKey());
-  const [spend, setSpend] = useState('');
-  const [p, setP] = useState(price ? String(price) : '');
+function FillScreen({ data, price, station, update, addEntry, say, onDone, onCancel }) {
+  const known = station && data.stations[station.id];
+  const [spend, setSpend] = useState(null);
+  const [other, setOther] = useState('');
+  const [p, setP] = useState(String((known && known.lastPrice) || price || ''));
   const [odo, setOdo] = useState('');
-  const [station, setStation] = useState(prefill ? prefill.station : '');
-  const [full, setFull] = useState(true);
-  const [saveSpot, setSaveSpot] = useState(!(prefill && prefill.spotId));
-  const [busy, setBusy] = useState(false);
-  const sp = num(spend), pr = num(p);
+  const [name, setName] = useState(station ? station.name : '');
+  const [full, setFull] = useState(false);
+  const sp = spend === 'other' ? num(other) : spend;
+  const pr = num(p);
   const litres = sp && pr ? sp / (pr / 100) : null;
 
-  const save = async () => {
+  const save = () => {
     if (!sp || !pr) return;
-    setBusy(true);
-    let newSpot = null;
-    if (saveSpot) {
-      try {
-        const pos = await currentPosition();
-        const tooClose = data.spots.some((s) => haversine(s, pos) < 60);
-        if (!tooClose) newSpot = { id: Date.now().toString(36), name: station.trim() || 'Fuel station', latitude: pos.latitude, longitude: pos.longitude };
-      } catch (e) {
-        say("Couldn't get your location, so the station wasn't saved");
-      }
+    if (station) {
+      update((d) => ({ ...d, stations: { ...d.stations, [station.id]: {
+        name: station.name, latitude: station.latitude, longitude: station.longitude,
+        lastPrice: pr, visits: ((d.stations[station.id] || {}).visits || 0) + 1 } } }));
     }
-    if (newSpot) update((d) => ({ ...d, spots: [...d.spots, newSpot] }));
-    addEntry({ kind: 'fill', date, spend: Math.round(sp * 100) / 100, price: pr, litres: Math.round(litres * 100) / 100,
-      odo: num(odo), station: station.trim(), full });
-    setBusy(false);
-    say(newSpot ? 'Fill-up and station saved' : 'Fill-up saved');
+    addEntry({ kind: 'fill', date: todayKey(), spend: Math.round(sp * 100) / 100, price: pr, litres: Math.round(litres * 100) / 100,
+      odo: num(odo), station: name.trim(), stationId: station ? station.id : null, full });
+    say('Fill-up saved: ' + litres.toFixed(1) + ' L');
     onDone();
   };
 
   return (
     <View style={st.gap}>
       <Brand reg={data.car && data.car.reg} />
-      <Text style={st.h1}>{prefill && prefill.station ? 'Filling up at ' + prefill.station + '?' : 'Log a fill-up'}</Text>
-      <View style={st.row}>
-        <Field style={st.flex} label="Spent (£)" value={spend} onChangeText={setSpend} placeholder="50.00" keyboard="decimal-pad" />
-        <Field style={st.flex} label="Price (p/L)" value={p} onChangeText={setP} placeholder="139.9" keyboard="decimal-pad" />
+      <View style={{ gap: 4 }}>
+        {station ? <Label>{station.name}</Label> : null}
+        <Text style={st.h1}>How much did you spend?</Text>
       </View>
-      <Text style={st.body}>{litres ? 'That’s ' + litres.toFixed(1) + ' litres.' : 'Litres appear here as you type.'}</Text>
-      <Field label="Odometer (miles, optional)" value={odo} onChangeText={setOdo} placeholder="e.g. 48213" keyboard="number-pad" />
-      <Field label="Station" value={station} onChangeText={setStation} placeholder="e.g. Tesco, Leigh" />
+      <View style={st.chips}>
+        {SPEND_CHIPS.map((v) => (
+          <Pressable key={v} accessibilityRole="button" accessibilityState={{ selected: spend === v }} onPress={() => setSpend(v)}
+            style={[st.chip, spend === v && st.chipOn]}>
+            <Mono style={[{ fontSize: 20, fontWeight: '700' }, spend === v && { color: C.onAmber }]}>£{v}</Mono>
+          </Pressable>
+        ))}
+        <Pressable accessibilityRole="button" accessibilityState={{ selected: spend === 'other' }} onPress={() => setSpend('other')}
+          style={[st.chip, st.chipWide, spend === 'other' && st.chipOn]}>
+          <Text style={[st.btnTextQuiet, spend === 'other' && { color: C.onAmber }]}>Other amount</Text>
+        </Pressable>
+      </View>
+      {spend === 'other' ? <Field label="Amount (£)" value={other} onChangeText={setOther} placeholder="e.g. 47.32" keyboard="decimal-pad" /> : null}
+
+      <View style={[st.card, { alignItems: 'center' }]}>
+        <Mono style={{ fontSize: 46, fontWeight: '700', color: litres ? C.amber : C.muted }}>{litres ? litres.toFixed(1) : '–'}</Mono>
+        <Text style={st.small}>{litres ? 'litres added' : 'Pick an amount to see the litres'}</Text>
+      </View>
+
+      <Field label={station ? 'Price here (p per litre)' : 'Price (p per litre)'} value={p} onChangeText={setP} placeholder="139.9" keyboard="decimal-pad" />
+      <Text style={[st.small, { marginTop: -8 }]}>
+        {known && known.lastPrice ? 'Last time here you paid ' + known.lastPrice + 'p. Check the pump and change it if needed.' : 'Check the pump display and change this if needed.'}
+      </Text>
+      {!station ? <Field label="Station" value={name} onChangeText={setName} placeholder="e.g. Tesco, Leigh" /> : null}
       <View style={st.switchRow}>
-        <Text style={st.switchText}>Filled to full</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={st.switchText}>Filled to full</Text>
+          <Text style={st.small}>Brimming the tank twice lets us measure your real mpg.</Text>
+        </View>
         <Switch value={full} onValueChange={setFull} trackColor={{ true: C.amber, false: C.line }} accessibilityLabel="Filled to full" />
       </View>
-      {!(prefill && prefill.spotId) ? (
-        <View style={st.switchRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={st.switchText}>Remember this station</Text>
-            <Text style={st.small}>Saves where you are now, so next time you stop here we'll ask about fuel.</Text>
-          </View>
-          <Switch value={saveSpot} onValueChange={setSaveSpot} trackColor={{ true: C.amber, false: C.line }} accessibilityLabel="Remember this station" />
-        </View>
-      ) : null}
-      <Text style={st.small}>Two full fill-ups in a row give us your real mpg. The odometer reading makes it exact.</Text>
-      <Btn title={busy ? 'Saving…' : 'Save fill-up'} onPress={save} disabled={!sp || !pr || busy} />
-      <Btn kind="quiet" title="Cancel" onPress={onCancel} />
+      {full ? <Field label="Odometer (miles, optional)" value={odo} onChangeText={setOdo} placeholder="e.g. 48213" keyboard="number-pad" /> : null}
+      <Btn title="Save fill-up" onPress={save} disabled={!sp || !pr} />
+      <Btn kind="quiet" title="Not refuelling after all" onPress={onCancel} />
     </View>
   );
 }
@@ -385,7 +430,54 @@ function ManualTrip({ mpg, price, onSave, onCancel }) {
   );
 }
 
-function HistoryScreen({ data, mpg, price, update, say }) {
+function OdoScreen({ data, onSave, onCancel }) {
+  const [odo, setOdo] = useState('');
+  const v = num(odo);
+  return (
+    <View style={st.gap}>
+      <Brand reg={data.car && data.car.reg} />
+      <Text style={st.h1}>Odometer reading</Text>
+      <Text style={st.body}>We compare this with the miles the app logged since your last reading.</Text>
+      <Field label="Odometer (miles)" value={odo} onChangeText={setOdo} placeholder="e.g. 48213" keyboard="number-pad" />
+      <Btn title="Save reading" disabled={!v} onPress={() => onSave(Math.round(v))} />
+      <Btn kind="quiet" title="Cancel" onPress={onCancel} />
+    </View>
+  );
+}
+
+function OdoCard({ data }) {
+  const o = odoCheck(data.car, data.entries);
+  if (!o) {
+    return (
+      <View style={st.card}>
+        <Label>Odometer check</Label>
+        <Text style={st.small}>After two readings (monthly check-ins or full fill-ups with a reading) we'll show how many miles the app caught.</Text>
+      </View>
+    );
+  }
+  if (o.error) return <View style={st.card}><Label>Odometer check</Label><Text style={st.warn}>{o.error}</Text></View>;
+  const pct = Math.round(o.coverage * 100);
+  return (
+    <View style={st.card}>
+      <Label>Odometer check · {niceDate(o.a.date)} to {niceDate(o.b.date)}</Label>
+      <View style={st.between}><Text style={st.body}>Odometer says</Text><Mono style={{ fontSize: 17 }}>{o.actual} mi</Mono></View>
+      <View style={st.between}><Text style={st.body}>App logged</Text><Mono style={{ fontSize: 17 }}>{Math.round(o.logged * 10) / 10} mi</Mono></View>
+      <View style={st.between}>
+        <Text style={st.body}>Caught</Text>
+        <Mono style={{ fontSize: 17, fontWeight: '700', color: pct >= 95 && pct <= 105 ? C.good : C.amber }}>{pct}%</Mono>
+      </View>
+      <Text style={st.small}>
+        {pct > 105
+          ? 'The app logged more than the odometer. GPS may be over-counting, or a reading was mistyped.'
+          : o.untracked >= 1
+            ? Math.round(o.untracked) + ' miles weren’t tracked' + (o.untrackedCost != null ? ', about ' + gbp(o.untrackedCost) + ' of fuel.' : '.')
+            : 'Every mile accounted for.'}
+      </Text>
+    </View>
+  );
+}
+
+function HistoryScreen({ data, cal, price, update, say, go }) {
   const [armed, setArmed] = useState(null);
   const s = monthSummary(data.car, data.entries, todayKey().slice(0, 7));
   const list = useMemo(() => sortEntries(data.entries).reverse(), [data.entries]);
@@ -399,11 +491,11 @@ function HistoryScreen({ data, mpg, price, update, say }) {
     setArmed(null);
   };
   const exportData = async () => {
-    const text = JSON.stringify({ exported: new Date().toISOString(), ...data }, null, 1);
+    const text = JSON.stringify({ exported: new Date().toISOString(), calibration: cal, ...data }, null, 1);
     try {
       if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.share) {
         await navigator.share({ title: 'Miles & Pence data', text });
-      } else if (Platform.OS === 'web' && navigator.clipboard) {
+      } else if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard) {
         await navigator.clipboard.writeText(text);
         say('Copied. Paste it into Claude to analyse.');
       } else {
@@ -418,27 +510,51 @@ function HistoryScreen({ data, mpg, price, update, say }) {
       <Brand reg={data.car && data.car.reg} />
       <Text style={st.h1}>History</Text>
       <View style={st.card}>
-        <Label>Does it add up? ({new Date().toLocaleString('en-GB', { month: 'long' })})</Label>
+        <Label>Does it add up? ({monthName()})</Label>
         <View style={st.between}><Text style={st.body}>Trips, estimated</Text><Mono style={{ fontSize: 17 }}>{gbp(s.est)}</Mono></View>
         <View style={st.between}><Text style={st.body}>Fuel bought</Text><Mono style={{ fontSize: 17 }}>{gbp(s.bought)}</Mono></View>
-        <Text style={st.small}>Over a few weeks these should end up close. A big gap means a missed trip or an mpg that's off.</Text>
+        <Text style={st.small}>
+          {cal.calibrated
+            ? 'The speed model has been tuned to your fill-ups: your car uses ' + Math.round(Math.abs(cal.k - 1) * 100) + '% ' + (cal.k >= 1 ? 'more' : 'less') + ' than the official figure suggests.'
+            : 'Over a few weeks these should end up close. Two full fill-ups tune the model to your car.'}
+        </Text>
       </View>
+      <OdoCard data={data} />
+      <Btn kind="quiet" title="Add odometer reading" onPress={() => go('odo')} />
       {list.length === 0 ? (
         <View style={st.empty}><Text style={[st.body, { color: C.ink, fontWeight: '700' }]}>Nothing logged yet</Text><Text style={st.small}>Go back to Home and start a trip.</Text></View>
       ) : list.map((e) => {
-        const isTrip = e.kind === 'trip';
-        const cost = isTrip ? costFor(e.miles, mpg, price) : e.spend;
-        const meta = isTrip
-          ? niceDate(e.date) + ' · ' + e.miles + ' mi' + (e.seconds ? ' · ' + Math.round(e.seconds / 60) + ' min' : '') + (e.source === 'gps' ? ' · GPS' : ' · by hand')
-          : niceDate(e.date) + ' · ' + (e.litres || 0).toFixed(1) + ' L at ' + e.price + 'p' + (e.full ? ' · full' : '') + (e.odo ? ' · ' + e.odo + ' mi' : '');
+        let title, meta, amount, color = C.ink;
+        if (e.kind === 'trip') {
+          const f = tripFuel(e, data.car, data.entries, cal, price);
+          const tMpg = f.litres > 0 ? e.miles / (f.litres / LITRES_PER_GALLON) : null;
+          title = e.name || 'Trip';
+          const b = e.bands;
+          const mix = b && e.miles ? ' · ' + [['town', 'town'], ['aroad', 'A-road'], ['motorway', 'mway']]
+            .filter(([kk]) => b[kk] >= 0.1).map(([kk, n]) => Math.round((b[kk] / e.miles) * 100) + '% ' + n).join(', ') : '';
+          meta = niceDate(e.date) + ' · ' + e.miles + ' mi' + (e.seconds ? ' · ' + Math.round(e.seconds / 60) + ' min' : '') +
+            (tMpg ? ' · ' + tMpg.toFixed(0) + ' mpg' : '') + (e.source === 'gps' ? mix : ' · by hand');
+          amount = f.cost != null ? gbp(f.cost) : '–';
+        } else if (e.kind === 'fill') {
+          title = e.station || 'Fill-up';
+          meta = niceDate(e.date) + ' · ' + (e.litres || 0).toFixed(1) + ' L at ' + e.price + 'p' + (e.full ? ' · full' : '') + (e.odo ? ' · ' + e.odo + ' mi' : '');
+          amount = gbp(e.spend);
+          color = C.amber;
+        } else {
+          title = 'Odometer';
+          meta = niceDate(e.date);
+          amount = e.odo + ' mi';
+          color = C.muted;
+        }
+        const kind = e.kind === 'trip' ? 'TRIP  ' : e.kind === 'fill' ? 'FILL-UP  ' : 'CHECK  ';
         return (
           <View key={e.id} style={st.item}>
             <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-              <Text style={st.itemTitle}><Text style={st.kind}>{isTrip ? 'TRIP  ' : 'FILL-UP  '}</Text>{isTrip ? e.name || 'Trip' : e.station || 'Fill-up'}</Text>
+              <Text style={st.itemTitle}><Text style={st.kind}>{kind}</Text>{title}</Text>
               <Text style={st.small}>{meta}</Text>
             </View>
             <View style={{ alignItems: 'flex-end', gap: 2 }}>
-              <Mono style={{ fontSize: 17, fontWeight: '700', color: isTrip ? C.ink : C.amber }}>{cost != null ? gbp(cost) : '–'}</Mono>
+              <Mono style={{ fontSize: 17, fontWeight: '700', color }}>{amount}</Mono>
               <Pressable accessibilityRole="button" onPress={() => remove(e.id)} hitSlop={10}>
                 <Text style={[st.small, { textDecorationLine: 'underline', color: armed === e.id ? C.warn : C.muted }]}>{armed === e.id ? 'Tap again to delete' : 'Delete'}</Text>
               </Pressable>
@@ -446,19 +562,6 @@ function HistoryScreen({ data, mpg, price, update, say }) {
           </View>
         );
       })}
-      {data.spots.length ? (
-        <View style={st.card}>
-          <Label>Saved fuel stations</Label>
-          {data.spots.map((s) => (
-            <View key={s.id} style={st.between}>
-              <Text style={st.body}>{s.name}</Text>
-              <Pressable accessibilityRole="button" onPress={() => update((d) => ({ ...d, spots: d.spots.filter((x) => x.id !== s.id) }))} hitSlop={10}>
-                <Text style={[st.small, { textDecorationLine: 'underline' }]}>Remove</Text>
-              </Pressable>
-            </View>
-          ))}
-        </View>
-      ) : null}
       <Btn kind="quiet" title="Export my data" onPress={exportData} />
       <Text style={st.small}>Sends everything as text so you can paste it into Claude for a check-up.</Text>
     </View>
@@ -491,6 +594,10 @@ const st = StyleSheet.create({
   segBtn: { flex: 1, height: 42, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   segOn: { backgroundColor: C.surface },
   segText: { color: C.muted, fontWeight: '700', fontFamily: SANS },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  chip: { flexBasis: '30%', flexGrow: 1, height: 58, borderRadius: 14, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface, alignItems: 'center', justifyContent: 'center' },
+  chipWide: { flexBasis: '100%' },
+  chipOn: { backgroundColor: C.amber, borderColor: C.amber },
   card: { backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, borderRadius: 18, padding: 16, gap: 10 },
   stats: { flexDirection: 'row', gap: 10 },
   stats3: { flexDirection: 'row', gap: 8 },

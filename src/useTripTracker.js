@@ -1,40 +1,41 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-import { haversine, METRES_PER_MILE } from './fuel';
+import { band, haversine, idleLitres, METRES_PER_MILE, segmentLitres } from './fuel';
+import { fetchStations } from './stations';
 
 const MAX_ACCURACY_M = 35; // ignore fixes worse than this
 const MIN_STEP_M = 6; // ignore GPS jitter smaller than this
 const MAX_SPEED_MS = 70; // ~155 mph: anything faster is a GPS jump
-const STOP_RADIUS_M = 30; // still "stopped" if within this of where you stopped
-const STOP_SECONDS = 60; // stopped this long near a saved station → ask about fuel
-const SPOT_RADIUS_M = 80; // how close counts as "at" a saved station
+const STILL_MS = 0.9; // below ~2 mph counts as stopped
+const STOP_RADIUS_M = 25; // still "stopped" while within this of where you stopped
+const STOP_SECONDS = 40; // stopped this long at a station → ask about fuel
+const STATION_RADIUS_M = 60; // how close counts as "at" a station
+const STATION_REFRESH_M = 2500; // reload nearby stations after moving this far
 const KEEP_AWAKE_TAG = 'trip';
 
 /**
  * Tracks one trip with the phone's GPS while the app is open.
- * spots: saved fuel stations [{id, name, latitude, longitude}]
+ * model: { baseMpg, fuel } — used to estimate litres from speed as you drive.
  */
-export function useTripTracker(spots) {
+export function useTripTracker(model) {
   const [status, setStatus] = useState('idle'); // idle | starting | tracking | denied | error
   const [error, setError] = useState(null);
   const [miles, setMiles] = useState(0);
+  const [litres, setLitres] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [speedMph, setSpeedMph] = useState(0);
   const [accuracy, setAccuracy] = useState(null);
-  const [atSpot, setAtSpot] = useState(null);
+  const [station, setStation] = useState(null); // station you seem to be stopped at
+  const [stationCount, setStationCount] = useState(null);
+  const [stationError, setStationError] = useState(null);
 
+  const r = useRef({});
+  const modelRef = useRef(model);
+  modelRef.current = model;
   const sub = useRef(null);
   const timer = useRef(null);
-  const last = useRef(null);
-  const metres = useRef(0);
-  const startedAt = useRef(0);
-  const startPoint = useRef(null);
-  const anchor = useRef(null);
-  const promptedSpot = useRef(null);
   const awake = useRef(false);
-  const spotsRef = useRef(spots);
-  spotsRef.current = spots;
 
   const cleanup = useCallback(() => {
     if (sub.current) sub.current.remove();
@@ -48,48 +49,84 @@ export function useTripTracker(spots) {
       } catch (e) {}
     }
   }, []);
-
   useEffect(() => cleanup, [cleanup]);
 
+  const loadStations = useCallback(async (p) => {
+    const s = r.current;
+    if (s.stationsLoading) return;
+    s.stationsLoading = true;
+    s.stationsAt = p;
+    try {
+      s.stations = await fetchStations(p);
+      setStationCount(s.stations.length);
+      setStationError(null);
+    } catch (e) {
+      s.stationsAt = null; // try again on a later fix
+      setStationError('Couldn’t load nearby fuel stations');
+    } finally {
+      s.stationsLoading = false;
+    }
+  }, []);
+
   const onFix = useCallback((loc) => {
+    const s = r.current;
     const c = loc.coords;
     const p = { latitude: c.latitude, longitude: c.longitude, t: loc.timestamp || Date.now() };
     setAccuracy(c.accuracy != null ? Math.round(c.accuracy) : null);
     if (c.accuracy != null && c.accuracy > MAX_ACCURACY_M) return;
-    if (!startPoint.current) startPoint.current = p;
+    const m = modelRef.current || {};
+    if (!s.startPoint) s.startPoint = p;
+    if (!s.stationsAt || haversine(s.stationsAt, p) > STATION_REFRESH_M) loadStations(p);
 
-    if (c.speed != null && c.speed >= 0) setSpeedMph(c.speed * 2.23694);
+    const prev = s.prevFix;
+    s.prevFix = p;
+    const reported = c.speed != null && c.speed >= 0 ? c.speed : null;
 
-    if (last.current) {
-      const d = haversine(last.current, p);
-      const dt = Math.max(1, (p.t - last.current.t) / 1000);
+    if (s.lastPos) {
+      const d = haversine(s.lastPos, p);
+      const dt = Math.max(1, (p.t - s.lastPos.t) / 1000);
       if (d / dt > MAX_SPEED_MS) return; // GPS jump
       if (d >= MIN_STEP_M) {
-        metres.current += d;
-        setMiles(metres.current / METRES_PER_MILE);
-        last.current = p;
-        if (c.speed == null) setSpeedMph((d / dt) * 2.23694);
+        const ms = reported != null ? reported : d / dt;
+        const mph = ms * 2.23694;
+        s.metres += d;
+        s.litres += segmentLitres(d, mph, m.baseMpg);
+        s.bands[band(mph)] += d / METRES_PER_MILE;
+        s.lastPos = p;
+        setMiles(s.metres / METRES_PER_MILE);
+        setLitres(s.litres);
+        setSpeedMph(mph);
+      } else if (prev && (reported == null || reported < STILL_MS)) {
+        const idle = Math.min(30, (p.t - prev.t) / 1000);
+        s.idleSeconds += idle;
+        s.litres += idleLitres(idle, m.fuel);
+        setLitres(s.litres);
+        setSpeedMph(reported != null ? reported * 2.23694 : 0);
       }
     } else {
-      last.current = p;
+      s.lastPos = p;
     }
 
-    // Stop detection near a saved fuel station.
-    if (!anchor.current || haversine(anchor.current, p) > STOP_RADIUS_M) {
-      anchor.current = p;
-      promptedSpot.current = null;
-      setAtSpot(null);
+    // Are we stopped at a fuel station?
+    if (!s.anchor || haversine(s.anchor, p) > STOP_RADIUS_M) {
+      s.anchor = p;
+      if (s.asked && haversine(s.asked, p) > 150) s.asked = null; // left that station
+      setStation(null);
       return;
     }
-    const stoppedFor = (p.t - anchor.current.t) / 1000;
-    if (stoppedFor >= STOP_SECONDS && !promptedSpot.current) {
-      const near = (spotsRef.current || []).find((s) => haversine(s, p) <= SPOT_RADIUS_M);
-      if (near) {
-        promptedSpot.current = near.id;
-        setAtSpot(near);
+    const stoppedFor = (p.t - s.anchor.t) / 1000;
+    if (stoppedFor >= STOP_SECONDS && !s.asked && s.stations) {
+      let best = null, bestD = Infinity;
+      for (const st of s.stations) {
+        const d = haversine(st, p);
+        if (d < bestD) { best = st; bestD = d; }
+      }
+      if (best && bestD <= STATION_RADIUS_M) {
+        s.asked = best;
+        setStation(best);
       }
     }
-  }, []);
+  }, [loadStations]);
 
   const start = useCallback(async () => {
     setError(null);
@@ -100,21 +137,16 @@ export function useTripTracker(spots) {
         setStatus('denied');
         return false;
       }
-      metres.current = 0;
-      last.current = null;
-      anchor.current = null;
-      startPoint.current = null;
-      promptedSpot.current = null;
-      setMiles(0);
-      setElapsed(0);
-      setSpeedMph(0);
-      setAtSpot(null);
-      startedAt.current = Date.now();
+      const keepStations = r.current.stations;
+      const keepAt = r.current.stationsAt;
+      r.current = { metres: 0, litres: 0, idleSeconds: 0, bands: { town: 0, aroad: 0, motorway: 0 },
+        stations: keepStations, stationsAt: keepAt, startedAt: Date.now() };
+      setMiles(0); setLitres(0); setElapsed(0); setSpeedMph(0); setStation(null);
       try {
         await activateKeepAwakeAsync(KEEP_AWAKE_TAG);
         awake.current = true;
       } catch (e) {}
-      timer.current = setInterval(() => setElapsed(Math.round((Date.now() - startedAt.current) / 1000)), 1000);
+      timer.current = setInterval(() => setElapsed(Math.round((Date.now() - r.current.startedAt) / 1000)), 1000);
       sub.current = await Location.watchPositionAsync(
         { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 0 },
         onFix,
@@ -130,30 +162,26 @@ export function useTripTracker(spots) {
     }
   }, [onFix, cleanup]);
 
-  /** Stops tracking and returns the trip so far. */
+  /** Stops tracking and returns the trip. */
   const stop = useCallback(() => {
     cleanup();
+    const s = r.current;
+    const round = (n, d = 100) => Math.round(n * d) / d;
     const result = {
-      miles: Math.round((metres.current / METRES_PER_MILE) * 100) / 100,
-      seconds: Math.round((Date.now() - startedAt.current) / 1000),
-      startedAt: startedAt.current,
-      start: startPoint.current,
-      end: last.current,
+      miles: round(s.metres / METRES_PER_MILE),
+      litres: round(s.litres, 1000),
+      seconds: Math.round((Date.now() - s.startedAt) / 1000),
+      idleSeconds: Math.round(s.idleSeconds),
+      bands: { town: round(s.bands.town), aroad: round(s.bands.aroad), motorway: round(s.bands.motorway) },
+      start: s.startPoint || null,
+      end: s.lastPos || null,
     };
     setStatus('idle');
-    setAtSpot(null);
+    setStation(null);
     return result;
   }, [cleanup]);
 
-  const dismissSpot = useCallback(() => setAtSpot(null), []);
+  const dismissStation = useCallback(() => setStation(null), []);
 
-  return { status, error, miles, elapsed, speedMph, accuracy, atSpot, start, stop, dismissSpot };
-}
-
-/** One-off position, e.g. to save a fuel station. */
-export async function currentPosition() {
-  const perm = await Location.requestForegroundPermissionsAsync();
-  if (perm.status !== 'granted') throw new Error('Location permission was not given');
-  const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-  return { latitude: loc.coords.latitude, longitude: loc.coords.longitude, accuracy: loc.coords.accuracy };
+  return { status, error, miles, litres, elapsed, speedMph, accuracy, station, stationCount, stationError, start, stop, dismissStation };
 }
