@@ -6,6 +6,12 @@ workers_dev = true
 [vars]
 ALLOWED_ORIGINS = "https://jacob0281.github.io,http://localhost:8081,http://localhost:8765"
 
+# Testers' shared data. The deploy job creates this store on first run and fills in its id.
+[[kv_namespaces]]
+binding = "TESTERS"
+id = "__TESTERS_KV_ID__"
+
 # Secrets (set by the GitHub deploy job from repository secrets, never stored here):
 #   MOT_CLIENT_ID, MOT_CLIENT_SECRET, MOT_API_KEY   (DVSA MOT History API)
 #   DVLA_API_KEY                                     (DVLA Vehicle Enquiry Service)
+#   ADMIN_TOKEN                                      (password for the /admin test dashboard)

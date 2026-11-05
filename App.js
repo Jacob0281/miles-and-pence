@@ -8,7 +8,10 @@ import {
 import { loadData, newId, saveData } from './src/store';
 import { useTripTracker } from './src/useTripTracker';
 import { livePrice } from './src/stations';
-import { APP_VERSION, VEHICLE_LOOKUP_URL } from './src/config';
+import { APP_VERSION, CONTACT, DELETE_BY, NOTICE_DATE, NOTICE_VERSION, TEST_END, VEHICLE_LOOKUP_URL } from './src/config';
+import { leaveTest, newTester, shareNow, sharingAvailable } from './src/sharing';
+
+const needsAgreement = (d) => !(d.test && d.test.left) && !(d.test && d.test.agreedAt && d.test.noticeVersion >= NOTICE_VERSION);
 
 const ago = (iso) => {
   if (!iso) return '';
@@ -95,6 +98,7 @@ export default function App() {
     loadData().then((d) => {
       setData(d);
       if (!d.welcomed && !d.car) setScreen('welcome');
+      else if (needsAgreement(d)) setScreen('agree');
       else if (!officialMpg(d.car)) setScreen('car');
     });
   }, []);
@@ -111,6 +115,18 @@ export default function App() {
       }
     }
   }, []);
+
+  // Share a summary with the test team shortly after anything changes.
+  const [share, setShare] = useState({ state: 'idle', at: null });
+  useEffect(() => {
+    if (!data || !data.test || !data.test.testerId || data.test.left) return;
+    if (!sharingAvailable()) { setShare({ state: 'waiting', at: null }); return; }
+    const t = setTimeout(() => {
+      setShare((s) => ({ ...s, state: 'sending' }));
+      shareNow(data).then((at) => setShare({ state: 'ok', at })).catch(() => setShare((s) => ({ ...s, state: 'failed' })));
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [data]);
 
   const update = (fn) => setData((prev) => {
     const next = fn(prev);
@@ -174,8 +190,29 @@ export default function App() {
             <OdoScreen data={data} onSave={(o) => { addEntry({ kind: 'odo', date: todayKey(), odo: o }); say('Odometer saved'); setScreen('history'); }}
               onCancel={() => setScreen('history')} />
           )}
-          {screen === 'history' && <HistoryScreen data={data} cal={cal} price={price} update={update} say={say} go={setScreen} />}
-          {screen === 'welcome' && <WelcomeScreen onDone={() => { update((d) => ({ ...d, welcomed: true })); setScreen('car'); }} />}
+          {screen === 'history' && <HistoryScreen data={data} cal={cal} price={price} update={update} say={say} go={setScreen} share={share} />}
+          {screen === 'welcome' && <WelcomeScreen onDone={() => { update((d) => ({ ...d, welcomed: true })); setScreen('agree'); }} />}
+          {screen === 'agree' && (
+            <AgreeScreen onPrivacy={() => setScreen('privacy-from-agree')} onAgree={() => {
+              update((d) => ({ ...d, welcomed: true, test: { ...newTester(), ...(d.test && d.test.testerId ? { testerId: d.test.testerId, secret: d.test.secret } : {}),
+                agreedAt: new Date().toISOString(), noticeVersion: NOTICE_VERSION } }));
+              setScreen(officialMpg(data.car) ? 'home' : 'car');
+            }} />
+          )}
+          {(screen === 'privacy' || screen === 'privacy-from-agree') && (
+            <PrivacyScreen data={data} fromAgree={screen === 'privacy-from-agree'} share={share}
+              onBack={() => setScreen(screen === 'privacy-from-agree' ? 'agree' : 'history')}
+              onLeave={async () => {
+                try {
+                  await leaveTest(data);
+                  update((d) => ({ ...d, test: { left: true, leftAt: new Date().toISOString() } }));
+                  say('You’ve left the test. Your shared data is deleted.');
+                  setScreen('home');
+                } catch (e) {
+                  say('Couldn’t reach the test service. Try again when you have signal.');
+                }
+              }} />
+          )}
           {screen === 'feedback' && <FeedbackScreen data={data} cal={cal} price={price} say={say} onDone={() => setScreen('home')} />}
         </View>
       </ScrollView>
@@ -629,7 +666,7 @@ function OdoCard({ data }) {
   );
 }
 
-function HistoryScreen({ data, cal, price, update, say, go }) {
+function HistoryScreen({ data, cal, price, update, say, go, share }) {
   const [armed, setArmed] = useState(null);
   const s = monthSummary(data.car, data.entries, todayKey().slice(0, 7));
   const list = useMemo(() => sortEntries(data.entries).reverse(), [data.entries]);
@@ -671,6 +708,7 @@ function HistoryScreen({ data, cal, price, update, say, go }) {
             : 'Over a few weeks these should end up close. Two full fill-ups tune the model to your car.'}
         </Text>
       </View>
+      <ShareStatus data={data} share={share} go={go} />
       <OdoCard data={data} />
       <Btn kind="quiet" title="Add odometer reading" onPress={() => go('odo')} />
       {list.length === 0 ? (
@@ -718,6 +756,7 @@ function HistoryScreen({ data, cal, price, update, say, go }) {
       <Btn kind="quiet" title="Export my data" onPress={exportData} />
       <Text style={st.small}>Sends everything as text so you can paste it into Claude for a check-up.</Text>
       <Btn kind="quiet" title="Send feedback" onPress={() => go('feedback')} />
+      <Text style={[st.small, { marginTop: 8 }]}>Fuel prices contain public sector information licensed under the Open Government Licence v3.0.</Text>
     </View>
   );
 }
@@ -737,10 +776,6 @@ const WELCOME_STEPS = [
       'Stop at a fuel station and it asks how much you spent.',
       'Fill to full twice, entering your mileage, so it learns your car.',
     ],
-  },
-  {
-    title: 'Your data stays on your phone',
-    body: 'Your trips and fill-ups are stored only on this phone. Nothing leaves it unless you tap Export my data or Send feedback.\n\nThis is a test version, so things will change. Thanks for helping.',
   },
 ];
 
@@ -769,8 +804,149 @@ function WelcomeScreen({ onDone }) {
         </View>
       ) : null}
       <View style={{ flex: 1 }} />
-      <Btn title={last ? 'Set up my car' : 'Next'} onPress={() => (last ? onDone() : setI(i + 1))} />
+      <Btn title="Next" onPress={() => (last ? onDone() : setI(i + 1))} />
       {i > 0 ? <Btn kind="quiet" title="Back" onPress={() => setI(i - 1)} /> : null}
+    </View>
+  );
+}
+
+// ---------- taking part in the test: agreement + privacy notice ----------
+const contactLine = () => (CONTACT ? CONTACT : 'Jacob, the person who invited you to the test');
+
+function Bullets({ items }) {
+  return (
+    <View style={{ gap: 8 }}>
+      {items.map((t, k) => (
+        <View key={k} style={{ flexDirection: 'row', gap: 10 }}>
+          <Text style={[st.body, { color: C.amber }]}>•</Text>
+          <Text style={[st.body, { flex: 1, color: C.ink }]}>{t}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function AgreeScreen({ onAgree, onPrivacy }) {
+  return (
+    <View style={st.gap}>
+      <Brand />
+      <Text style={[st.h1, { marginTop: 16 }]}>Taking part in the test</Text>
+      <Text style={[st.body, { fontSize: 16 }]}>
+        This test is about checking how accurate the app is. To do that, a summary of your trips and fill-ups is shared with Jacob, who runs the test.
+      </Text>
+      <View style={[st.card, { gap: 12 }]}>
+        <Label>Shared automatically</Label>
+        <Bullets items={['Your car’s make, model and fuel', 'Each trip’s date, miles, fuel used and cost', 'Your fill-ups: amount, litres, price and station']} />
+        <Label style={{ marginTop: 6 }}>Never shared</Label>
+        <Bullets items={['Your routes, or where trips start and finish', 'Your registration number or name']} />
+      </View>
+      <Bullets items={['You can leave the test at any time, which deletes your shared data.', 'You must be 18 or over to take part.']} />
+      <Pressable accessibilityRole="link" onPress={onPrivacy} style={{ minHeight: 44, justifyContent: 'center' }}>
+        <Text style={[st.body, { color: C.amber, fontWeight: '700', textDecorationLine: 'underline' }]}>Read the full privacy notice</Text>
+      </Pressable>
+      <Btn title="I’m 18 or over and I agree" onPress={onAgree} />
+    </View>
+  );
+}
+
+function NoticeSection({ title, children }) {
+  return (
+    <View style={{ gap: 6 }}>
+      <Text style={[st.h2, { fontSize: 17 }]}>{title}</Text>
+      {children}
+    </View>
+  );
+}
+
+function PrivacyScreen({ data, fromAgree, share, onBack, onLeave }) {
+  const [armed, setArmed] = useState(false);
+  const t = data.test || {};
+  const taking = t.testerId && !t.left;
+  return (
+    <View style={st.gap}>
+      <Brand />
+      <Text style={st.h1}>Privacy notice</Text>
+      <Text style={st.small}>Miles & Pence test · version {NOTICE_VERSION} · {NOTICE_DATE}</Text>
+      <NoticeSection title="Who is responsible">
+        <Text style={st.body}>Jacob runs the Miles & Pence test and is responsible for the data shared with it. Questions or requests go to {contactLine()}.</Text>
+      </NoticeSection>
+      <NoticeSection title="What is shared">
+        <Bullets items={[
+          'A random tester code, not your name',
+          'Your car’s make, model, year, engine size and fuel, and the CO₂, mpg and fuel price you entered',
+          'Each trip’s date, miles, time taken, estimated fuel and cost, and how much was town, A-road or motorway',
+          'Your fill-ups: date, amount spent, litres, price, station name and any mileage you entered',
+          'The app version and type of phone',
+        ]} />
+      </NoticeSection>
+      <NoticeSection title="What is never shared">
+        <Bullets items={[
+          'Your routes, or where trips start and finish. GPS is used on your phone only, to measure distance.',
+          'Your registration number, name, contacts or trip names',
+        ]} />
+      </NoticeSection>
+      <NoticeSection title="Why">
+        <Text style={st.body}>To check how accurate the app is and improve it during the test. The legal basis is legitimate interests: the test exists to measure accuracy, and sharing this summary is a condition of taking part. Your data is not sold, used for advertising or used to contact you.</Text>
+      </NoticeSection>
+      <NoticeSection title="Who handles it">
+        <Bullets items={[
+          'Cloudflare stores the shared data, under its data protection terms. It may be processed outside the UK.',
+          'GitHub hosts the app itself.',
+          'AI tools such as Claude, made by Anthropic, may be used to analyse the results.',
+        ]} />
+      </NoticeSection>
+      <NoticeSection title="How long it’s kept">
+        <Text style={st.body}>The test runs until {TEST_END}. All shared data will be deleted by {DELETE_BY}, or straight away if you leave the test.</Text>
+      </NoticeSection>
+      <NoticeSection title="Your rights">
+        <Text style={st.body}>You can ask for a copy of your shared data, ask for it to be corrected, or have it deleted. Leaving the test deletes it immediately. If you’re unhappy with how it’s handled, you can complain to the Information Commissioner’s Office at ico.org.uk.</Text>
+      </NoticeSection>
+      <NoticeSection title="Who can take part">
+        <Text style={st.body}>Adults aged 18 or over.</Text>
+      </NoticeSection>
+      <Text style={st.small}>Fuel prices contain public sector information licensed under the Open Government Licence v3.0 (UK Government Fuel Finder scheme).</Text>
+
+      {!fromAgree && taking ? (
+        <View style={[st.card, { gap: 10 }]}>
+          <Label>Your test code: {t.testerId}</Label>
+          <Text style={st.small}>Quote this code if you contact Jacob about your data.</Text>
+          <Btn kind="quiet" title={armed ? 'Tap again to leave and delete my data' : 'Leave the test and delete my shared data'}
+            onPress={() => { if (armed) onLeave(); else { setArmed(true); setTimeout(() => setArmed(false), 4000); } }}
+            style={armed ? { borderColor: C.warn } : null} />
+          <Text style={st.small}>Your trips stay on this phone and the app keeps working. Nothing more is shared.</Text>
+        </View>
+      ) : null}
+      <Btn kind="quiet" title="Back" onPress={onBack} />
+    </View>
+  );
+}
+
+function ShareStatus({ data, share, go }) {
+  const t = data.test || {};
+  if (t.left) {
+    return (
+      <View style={st.card}>
+        <Label>Test</Label>
+        <Text style={st.small}>You left the test{t.leftAt ? ' on ' + new Date(t.leftAt).toLocaleDateString('en-GB') : ''}. Nothing is shared.</Text>
+      </View>
+    );
+  }
+  if (!t.testerId) return null;
+  const line = share.state === 'ok' && share.at
+    ? 'Last sent ' + ago(share.at) + '.'
+    : share.state === 'sending' ? 'Sending…'
+      : share.state === 'failed' ? 'Couldn’t send just now. It will try again next time something changes.'
+        : 'Waiting for the test service to be switched on. Everything will be sent once it is.';
+  return (
+    <View style={st.card}>
+      <View style={st.between}>
+        <Label>Sharing with the test team</Label>
+        <Text style={[st.small, { color: share.state === 'ok' ? C.good : share.state === 'failed' ? C.warn : C.muted }]}>{t.testerId}</Text>
+      </View>
+      <Text style={st.small}>{line}</Text>
+      <Pressable accessibilityRole="link" onPress={() => go('privacy')} style={{ minHeight: 44, justifyContent: 'center' }}>
+        <Text style={[st.small, { color: C.amber, fontWeight: '700', textDecorationLine: 'underline' }]}>Privacy notice and leaving the test</Text>
+      </Pressable>
     </View>
   );
 }
