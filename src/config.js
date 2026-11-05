@@ -8,7 +8,8 @@ export const APP_VERSION = '0.6 (test)';
  * Address of the Miles & Pence service (Cloudflare Worker): reg lookup and test data sharing.
  * Empty = both switched off (sharing waits and sends everything once it's set).
  */
-export const API_URL = (process.env.EXPO_PUBLIC_API_URL || process.env.EXPO_PUBLIC_VEHICLE_LOOKUP_URL || '').replace(/\/$/, '');
+export const API_URL = (process.env.EXPO_PUBLIC_API_URL || process.env.EXPO_PUBLIC_VEHICLE_LOOKUP_URL ||
+  'https://miles-and-pence-lookup.milesandpence.workers.dev').replace(/\/$/, '');
 export const VEHICLE_LOOKUP_URL = API_URL;
 
 /** Who testers contact about their data. Empty = "the person who invited you". */

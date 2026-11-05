@@ -266,7 +266,14 @@ function CarScreen({ data, update, onDone }) {
   const [reg, setReg] = useState((data.car && data.car.reg) || '');
   const [found, setFound] = useState(null);
   const [note, setNote] = useState(null);
-  const lookupOn = !!VEHICLE_LOOKUP_URL;
+  // Offer "Find my car" only once the service has vehicle-data credentials.
+  const [lookupOn, setLookupOn] = useState(false);
+  useEffect(() => {
+    if (!VEHICLE_LOOKUP_URL) return;
+    let live = true;
+    fetch(VEHICLE_LOOKUP_URL + '/health').then((r) => r.json()).then((h) => { if (live) setLookupOn(!!(h.mot || h.dvla)); }).catch(() => {});
+    return () => { live = false; };
+  }, []);
 
   const find = async () => {
     const clean = reg.toUpperCase().replace(/[^A-Z0-9]/g, '');
