@@ -94,7 +94,11 @@ export const sharingAvailable = () => !!API_URL;
 export async function shareNow(data) {
   const t = data.test;
   if (!API_URL || !t || !t.testerId || t.left) return null;
-  const r = await post('/share', { testerId: t.testerId, secret: t.secret, agreedAt: t.agreedAt, noticeVersion: t.noticeVersion, snapshot: buildSnapshot(data) });
+  const r = await post('/share', {
+    testerId: t.testerId, secret: t.secret, agreedAt: t.agreedAt, noticeVersion: t.noticeVersion,
+    consent: { insights: !!t.insights, insightsAt: t.insightsAt || null },
+    snapshot: buildSnapshot(data),
+  });
   return r.lastSync;
 }
 

@@ -193,14 +193,16 @@ export default function App() {
           {screen === 'history' && <HistoryScreen data={data} cal={cal} price={price} update={update} say={say} go={setScreen} share={share} />}
           {screen === 'welcome' && <WelcomeScreen onDone={() => { update((d) => ({ ...d, welcomed: true })); setScreen('agree'); }} />}
           {screen === 'agree' && (
-            <AgreeScreen onPrivacy={() => setScreen('privacy-from-agree')} onAgree={() => {
+            <AgreeScreen onPrivacy={() => setScreen('privacy-from-agree')} onAgree={(insights) => {
+              const now = new Date().toISOString();
               update((d) => ({ ...d, welcomed: true, test: { ...newTester(), ...(d.test && d.test.testerId ? { testerId: d.test.testerId, secret: d.test.secret } : {}),
-                agreedAt: new Date().toISOString(), noticeVersion: NOTICE_VERSION } }));
+                agreedAt: now, noticeVersion: NOTICE_VERSION, insights: !!insights, insightsAt: now } }));
               setScreen(officialMpg(data.car) ? 'home' : 'car');
             }} />
           )}
           {(screen === 'privacy' || screen === 'privacy-from-agree') && (
             <PrivacyScreen data={data} fromAgree={screen === 'privacy-from-agree'} share={share}
+              onSetInsights={(v) => update((d) => ({ ...d, test: { ...d.test, insights: v, insightsAt: new Date().toISOString() } }))}
               onBack={() => setScreen(screen === 'privacy-from-agree' ? 'agree' : 'history')}
               onLeave={async () => {
                 try {
@@ -826,7 +828,22 @@ function Bullets({ items }) {
   );
 }
 
+function InsightsSwitch({ value, onChange }) {
+  return (
+    <View style={[st.switchRow, { alignItems: 'flex-start' }]}>
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text style={st.switchText}>Optional: help build anonymous insights</Text>
+        <Text style={st.small}>
+          Let Miles & Pence keep and use your data after the test, anonymised and combined with other drivers’, for things like real-world mpg by car model. Off unless you turn it on; you can change it any time.
+        </Text>
+      </View>
+      <Switch value={value} onValueChange={onChange} trackColor={{ true: C.amber, false: C.line }} accessibilityLabel="Help build anonymous insights" />
+    </View>
+  );
+}
+
 function AgreeScreen({ onAgree, onPrivacy }) {
+  const [insights, setInsights] = useState(false);
   return (
     <View style={st.gap}>
       <Brand />
@@ -844,7 +861,8 @@ function AgreeScreen({ onAgree, onPrivacy }) {
       <Pressable accessibilityRole="link" onPress={onPrivacy} style={{ minHeight: 44, justifyContent: 'center' }}>
         <Text style={[st.body, { color: C.amber, fontWeight: '700', textDecorationLine: 'underline' }]}>Read the full privacy notice</Text>
       </Pressable>
-      <Btn title="I’m 18 or over and I agree" onPress={onAgree} />
+      <View style={st.card}><InsightsSwitch value={insights} onChange={setInsights} /></View>
+      <Btn title="I’m 18 or over and I agree" onPress={() => onAgree(insights)} />
     </View>
   );
 }
@@ -858,7 +876,7 @@ function NoticeSection({ title, children }) {
   );
 }
 
-function PrivacyScreen({ data, fromAgree, share, onBack, onLeave }) {
+function PrivacyScreen({ data, fromAgree, share, onBack, onLeave, onSetInsights }) {
   const [armed, setArmed] = useState(false);
   const t = data.test || {};
   const taking = t.testerId && !t.left;
@@ -886,7 +904,10 @@ function PrivacyScreen({ data, fromAgree, share, onBack, onLeave }) {
         ]} />
       </NoticeSection>
       <NoticeSection title="Why">
-        <Text style={st.body}>To check how accurate the app is and improve it during the test. The legal basis is legitimate interests: the test exists to measure accuracy, and sharing this summary is a condition of taking part. Your data is not sold, used for advertising or used to contact you.</Text>
+        <Text style={st.body}>To check how accurate the app is and improve it during the test. The legal basis is legitimate interests: the test exists to measure accuracy, and sharing this summary is a condition of taking part. Unless you opt in below, your data is not shared with other organisations, sold, used for advertising or used to contact you.</Text>
+      </NoticeSection>
+      <NoticeSection title="Optional: anonymous insights">
+        <Text style={st.body}>Only if you turn this on, your data may be kept after the test and used, anonymised and combined with other drivers’, to produce insights such as real-world mpg by car model or the cost of driving in different areas. These insights may be published or shared with other organisations, and may be used commercially. They never identify you. The legal basis is your consent, and you can withdraw it at any time; your data then goes when the test data is deleted.</Text>
       </NoticeSection>
       <NoticeSection title="Who handles it">
         <Bullets items={[
@@ -896,7 +917,7 @@ function PrivacyScreen({ data, fromAgree, share, onBack, onLeave }) {
         ]} />
       </NoticeSection>
       <NoticeSection title="How long it’s kept">
-        <Text style={st.body}>The test runs until {TEST_END}. All shared data will be deleted by {DELETE_BY}, or straight away if you leave the test.</Text>
+        <Text style={st.body}>The test runs until {TEST_END}. Shared data will be deleted by {DELETE_BY}, or straight away if you leave the test. If you opted in to anonymous insights, your data is anonymised and kept for that purpose until you withdraw.</Text>
       </NoticeSection>
       <NoticeSection title="Your rights">
         <Text style={st.body}>You can ask for a copy of your shared data, ask for it to be corrected, or have it deleted. Leaving the test deletes it immediately. If you’re unhappy with how it’s handled, you can complain to the Information Commissioner’s Office at ico.org.uk.</Text>
@@ -910,6 +931,7 @@ function PrivacyScreen({ data, fromAgree, share, onBack, onLeave }) {
         <View style={[st.card, { gap: 10 }]}>
           <Label>Your test code: {t.testerId}</Label>
           <Text style={st.small}>Quote this code if you contact Jacob about your data.</Text>
+          <InsightsSwitch value={!!t.insights} onChange={onSetInsights} />
           <Btn kind="quiet" title={armed ? 'Tap again to leave and delete my data' : 'Leave the test and delete my shared data'}
             onPress={() => { if (armed) onLeave(); else { setArmed(true); setTimeout(() => setArmed(false), 4000); } }}
             style={armed ? { borderColor: C.warn } : null} />

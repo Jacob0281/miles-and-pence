@@ -15,7 +15,7 @@ export const VEHICLE_LOOKUP_URL = API_URL;
 export const CONTACT = process.env.EXPO_PUBLIC_CONTACT || '';
 
 /** Bump when the privacy notice changes in a way testers should see again. */
-export const NOTICE_VERSION = 1;
+export const NOTICE_VERSION = 2;
 export const NOTICE_DATE = '5 November 2026';
 export const TEST_END = '3 December 2026';
 export const DELETE_BY = '31 March 2027';
