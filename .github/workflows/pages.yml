@@ -2,9 +2,7 @@ name: Publish website
 on:
   push:
     branches: [main]
-  schedule:
-    - cron: '7,37 * * * *' # refresh fuel prices about every 30 minutes
-  workflow_dispatch:
+  workflow_dispatch: # also started by the price collector after each price update
 permissions:
   contents: read
   pages: write
@@ -23,12 +21,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build:web
-      - name: Fetch live fuel prices
-        continue-on-error: true
-        env:
-          FUEL_FINDER_CLIENT_ID: ${{ secrets.FUEL_FINDER_CLIENT_ID }}
-          FUEL_FINDER_CLIENT_SECRET: ${{ secrets.FUEL_FINDER_CLIENT_SECRET }}
-        run: node scripts/fetch-prices.mjs dist/prices.json
+      # Fuel Finder only answers UK traffic, so prices are collected on a UK machine
+      # (collector/) and pushed to the 'prices' branch. Publish the latest copy with the site.
+      - name: Add latest fuel prices
+        run: |
+          if git fetch --depth 1 origin prices 2>/dev/null; then
+            git show origin/prices:prices.json > dist/prices.json && echo "Added prices.json ($(wc -c < dist/prices.json) bytes)"
+          else
+            echo "No prices branch yet"
+          fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
