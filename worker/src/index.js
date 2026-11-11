@@ -230,7 +230,7 @@ th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white
 <div class="card row" id="login"><input id="pw" type="password" placeholder="Dashboard password" autocomplete="current-password" aria-label="Dashboard password"><button id="go">Show testers</button><span id="msg" class="muted"></span></div>
 <div id="out" hidden>
 <div class="kpis" id="kpis"></div>
-<div class="card tbl"><table><thead><tr><th>Tester</th><th>Car</th><th>Phone</th><th>Trips</th><th>Miles</th><th>GPS paused</th><th>Est. trip cost</th><th>Fuel bought</th><th>Model vs real</th><th>Stops detected</th><th>Insights opt-in</th><th>Notice</th><th>Last trip</th><th>Last sync</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="card tbl"><table><thead><tr><th>Tester</th><th>Car</th><th>Phone</th><th>Trips</th><th>Miles</th><th>GPS paused</th><th>Est. trip cost</th><th>Fuel bought</th><th>Model vs real</th><th>Stops detected</th><th>Driver score</th><th>Insights opt-in</th><th>Notice</th><th>Last trip</th><th>Last sync</th></tr></thead><tbody id="rows"></tbody></table></div>
 <div class="row"><button class="q" id="dl">Download all data (JSON)</button><span class="muted" id="at"></span></div>
 </div></div>
 <script>
@@ -242,13 +242,14 @@ async function load(){const pw=$('pw').value||sessionStorage.getItem('mp-admin')
  sessionStorage.setItem('mp-admin',pw);data=await r.json();$('msg').textContent='';$('login').hidden=true;$('out').hidden=false;render()}
 function render(){const t=data.testers;const s=t.map(x=>(x.snapshot&&x.snapshot.summary)||{});const sum=k=>s.reduce((a,b)=>a+(Number(b[k])||0),0);
  const active=t.filter(x=>x.snapshot&&x.snapshot.summary&&x.snapshot.summary.lastTripDate&&(Date.now()-new Date(x.snapshot.summary.lastTripDate))<7*864e5).length;
- const k=[['Testers',t.length],['Insights opt-in',t.filter(x=>x.consent&&x.consent.insights).length],['Active this week',active],['Trips',sum('trips')],['Miles',Math.round(sum('miles'))],['Fill-ups',sum('fills')],['Stops detected',sum('fills')?Math.round(100*sum('fillsDetected')/sum('fills'))+'%':'–']];
+ const sc=s.map(x=>x.driverScore).filter(v=>v!=null);
+ const k=[['Testers',t.length],['Avg driver score',sc.length?Math.round(sc.reduce((a,b)=>a+b,0)/sc.length):'–'],['Insights opt-in',t.filter(x=>x.consent&&x.consent.insights).length],['Active this week',active],['Trips',sum('trips')],['Miles',Math.round(sum('miles'))],['Fill-ups',sum('fills')],['Stops detected',sum('fills')?Math.round(100*sum('fillsDetected')/sum('fills'))+'%':'–']];
  $('kpis').replaceChildren(...k.map(([l,v])=>{const d=document.createElement('div');d.className='card kpi';const a=document.createElement('div');a.className='muted';a.textContent=l;const b=document.createElement('div');b.className='v';b.textContent=v;d.append(a,b);return d}));
  $('rows').replaceChildren(...t.map(x=>{const c=(x.snapshot&&x.snapshot.car)||{};const m=(x.snapshot&&x.snapshot.summary)||{};const tr=document.createElement('tr');
   const kk=m.k?Math.round((m.k-1)*100):null;
   tr.append(cell(x.testerId),cell([c.make,c.model].filter(Boolean).join(' ')||(c.fuel||'–')),cell((x.snapshot&&x.snapshot.platform)||'–'),cell(m.trips||0),cell(Math.round(m.miles||0)),
    cell(m.gapMiles?m.gapMiles.toFixed(1)+' mi':'–'),cell(gbp(m.est)),cell(gbp(m.bought)),cell(kk==null?'not yet':(kk>0?'+':'')+kk+'%',kk==null?'muted':Math.abs(kk)<=10?'ok':'bad'),
-   cell(m.fills?m.fillsDetected+' of '+m.fills:'–'),cell(x.consent&&x.consent.insights?'Yes':'No',x.consent&&x.consent.insights?'ok':'muted'),cell('v'+(x.noticeVersion||'?')),cell(m.lastTripDate||'–'),cell(ago(x.lastSync)));return tr}));
+   cell(m.fills?m.fillsDetected+' of '+m.fills:'–'),cell(m.driverScore==null?'–':m.driverScore,m.driverScore==null?'muted':m.driverScore>=70?'ok':'bad'),cell(x.consent&&x.consent.insights?'Yes':'No',x.consent&&x.consent.insights?'ok':'muted'),cell('v'+(x.noticeVersion||'?')),cell(m.lastTripDate||'–'),cell(ago(x.lastSync)));return tr}));
  $('at').textContent='Loaded '+new Date(data.at).toLocaleString('en-GB')}
 $('go').onclick=load;$('pw').addEventListener('keydown',e=>{if(e.key==='Enter')load()});
 $('dl').onclick=()=>{const b=new Blob([JSON.stringify(data,null,1)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='miles-and-pence-test-data.json';a.click()};

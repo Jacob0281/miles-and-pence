@@ -8,6 +8,7 @@ import {
 import { loadData, newId, saveData } from './src/store';
 import { useTripTracker } from './src/useTripTracker';
 import { livePrice } from './src/stations';
+import { driverScore, hasScore, scoreLabel, scoreTrip, TIP_LIBRARY } from './src/score';
 import { APP_VERSION, CONTACT, DELETE_BY, NOTICE_DATE, NOTICE_VERSION, TEST_END, VEHICLE_LOOKUP_URL } from './src/config';
 import { leaveTest, newTester, shareNow, sharingAvailable } from './src/sharing';
 
@@ -86,6 +87,7 @@ export default function App() {
   const [screen, setScreen] = useState('home');
   const [toast, setToast] = useState(null);
   const [fillStation, setFillStation] = useState(null);
+  const [tripView, setTripView] = useState(null);
   const toastTimer = useRef(null);
 
   const car = data ? data.car : null;
@@ -151,19 +153,24 @@ export default function App() {
   };
   const finishTrip = (station) => {
     const r = tracker.stop();
-    if (r.miles >= 0.05) {
-      addEntry({ kind: 'trip', date: todayKey(), source: 'gps', name: station ? 'To ' + station.name : '',
+    const id = newId();
+    const saved = r.miles >= 0.05;
+    if (saved) {
+      addEntry({ id, kind: 'trip', date: todayKey(), source: 'gps', name: station ? 'To ' + station.name : '',
         miles: Math.round(r.miles * 10) / 10, litres: r.litres, seconds: r.seconds, idleSeconds: r.idleSeconds,
-        bands: r.bands, gapMiles: r.gapMiles, start: r.start, end: r.end });
+        bands: r.bands, gapMiles: r.gapMiles, behaviour: r.behaviour, start: r.start, end: r.end });
       say('Trip saved: ' + r.miles.toFixed(1) + ' mi');
     } else say('Trip too short to save');
     if (station !== undefined) {
       setFillStation(station);
       setScreen('fill');
+    } else if (saved) {
+      setTripView(id); // journey snapshot, shown now the car has stopped
+      setScreen('trip');
     } else setScreen('history');
   };
 
-  const showNav = screen === 'home' || screen === 'history';
+  const showNav = screen === 'home' || screen === 'history' || screen === 'tips';
   return (
     <View style={st.root}>
       <StatusBar style="light" />
@@ -190,7 +197,13 @@ export default function App() {
             <OdoScreen data={data} onSave={(o) => { addEntry({ kind: 'odo', date: todayKey(), odo: o }); say('Odometer saved'); setScreen('history'); }}
               onCancel={() => setScreen('history')} />
           )}
-          {screen === 'history' && <HistoryScreen data={data} cal={cal} price={price} update={update} say={say} go={setScreen} share={share} />}
+          {screen === 'history' && <HistoryScreen data={data} cal={cal} price={price} update={update} say={say} go={setScreen} share={share}
+            onOpenTrip={(id) => { setTripView(id); setScreen('trip'); }} />}
+          {screen === 'trip' && (
+            <TripScreen trip={data.entries.find((x) => x.id === tripView)} data={data} cal={cal} price={price} update={update}
+              onDone={() => setScreen('history')} onTips={() => setScreen('tips')} />
+          )}
+          {screen === 'tips' && <TipsScreen data={data} cal={cal} price={price} />}
           {screen === 'welcome' && <WelcomeScreen onDone={() => { update((d) => ({ ...d, welcomed: true })); setScreen('agree'); }} />}
           {screen === 'agree' && (
             <AgreeScreen onPrivacy={() => setScreen('privacy-from-agree')} onAgree={(insights) => {
@@ -220,7 +233,7 @@ export default function App() {
       </ScrollView>
       {showNav && (
         <View style={st.nav}>
-          {[['home', 'Home'], ['history', 'History'], ['car', 'Car']].map(([k, t]) => (
+          {[['home', 'Home'], ['history', 'History'], ['tips', 'Tips'], ['car', 'Car']].map(([k, t]) => (
             <Pressable key={k} accessibilityRole="button" onPress={() => setScreen(k)} style={st.navBtn}>
               <Text style={[st.navText, screen === k && { color: C.amber }]}>{t}</Text>
             </Pressable>
@@ -455,6 +468,7 @@ function HomeScreen({ data, mpg, price, cal, tracker, onStart, go, onFill, addEn
         <Stat label={cal.realMpg ? 'Your real mpg' : 'Official mpg'} value={mpg ? mpg.toFixed(1) : '–'}
           sub={cal.realMpg ? 'from your fill-ups' : 'until 2 full fill-ups'} />
       </View>
+      <DriverScoreCard data={data} cal={cal} price={price} onTips={() => go('tips')} />
       <View style={st.row}>
         <Btn kind="quiet" title="Log a fill-up" onPress={onFill} style={st.flex} />
         <Btn kind="quiet" title="Add trip by hand" onPress={() => go('manual')} style={st.flex} />
@@ -481,6 +495,26 @@ function LiveScreen({ tracker, baseMpg, k, price, car, onEnd, onFuel }) {
         <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: gpsOk ? C.good : C.amber }} />
         <Label>{gpsOk ? 'Trip in progress' : 'Waiting for a good GPS signal'}</Label>
       </View>
+      {!gpsOk && tracker.elapsed >= 15 ? (
+        <View style={[st.card, { borderColor: C.amber, gap: 6 }]}>
+          {tracker.accuracy == null ? (
+            <>
+              <Text style={[st.h2, { fontSize: 16 }]}>No location from your phone yet</Text>
+              <Text style={st.body}>Check Settings › Privacy & Security › Location Services is on, and that Safari Websites is set to While Using the App. Then close this app fully and reopen it.</Text>
+            </>
+          ) : tracker.accuracy > 500 ? (
+            <>
+              <Text style={[st.h2, { fontSize: 16 }]}>Only a rough location (±{tracker.accuracy} m)</Text>
+              <Text style={st.body}>Precise Location looks switched off. Turn it on in Settings › Privacy & Security › Location Services › Safari Websites › Precise Location.</Text>
+            </>
+          ) : (
+            <>
+              <Text style={[st.h2, { fontSize: 16 }]}>Weak signal (±{tracker.accuracy} m)</Text>
+              <Text style={st.body}>Normal indoors or in a car park. It should settle within a minute outside. If it doesn’t, check Precise Location is on in Settings › Privacy & Security › Location Services › Safari Websites.</Text>
+            </>
+          )}
+        </View>
+      ) : null}
 
       {tracker.station ? (
         <View style={[st.card, { borderColor: C.amber, borderWidth: 2 }]}>
@@ -675,7 +709,7 @@ function OdoCard({ data }) {
   );
 }
 
-function HistoryScreen({ data, cal, price, update, say, go, share }) {
+function HistoryScreen({ data, cal, price, update, say, go, share, onOpenTrip }) {
   const [armed, setArmed] = useState(null);
   const s = monthSummary(data.car, data.entries, todayKey().slice(0, 7));
   const list = useMemo(() => sortEntries(data.entries).reverse(), [data.entries]);
@@ -734,6 +768,7 @@ function HistoryScreen({ data, cal, price, update, say, go, share }) {
           meta = niceDate(e.date) + ' · ' + e.miles + ' mi' + (e.seconds ? ' · ' + Math.round(e.seconds / 60) + ' min' : '') +
             (tMpg ? ' · ' + tMpg.toFixed(0) + ' mpg' : '') + (e.source === 'gps' ? mix : ' · by hand') +
             (e.gapMiles >= 0.1 ? ' · ' + e.gapMiles.toFixed(1) + ' mi estimated (GPS paused)' : '');
+          if (hasScore(e)) meta += ' · score ' + scoreTrip(e, { car: data.car, cal, price }).score;
           amount = f.cost != null ? gbp(f.cost) : '–';
         } else if (e.kind === 'fill') {
           title = e.station || 'Fill-up';
@@ -749,10 +784,12 @@ function HistoryScreen({ data, cal, price, update, say, go, share }) {
         const kind = e.kind === 'trip' ? 'TRIP  ' : e.kind === 'fill' ? 'FILL-UP  ' : 'CHECK  ';
         return (
           <View key={e.id} style={st.item}>
-            <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+            <Pressable accessibilityRole={e.kind === 'trip' ? 'button' : undefined} disabled={e.kind !== 'trip'}
+              onPress={() => onOpenTrip(e.id)} style={{ flex: 1, minWidth: 0, gap: 2 }}>
               <Text style={st.itemTitle}><Text style={st.kind}>{kind}</Text>{title}</Text>
               <Text style={st.small}>{meta}</Text>
-            </View>
+              {e.kind === 'trip' ? <Text style={[st.small, { color: C.amber, fontWeight: '700' }]}>View journey</Text> : null}
+            </Pressable>
             <View style={{ alignItems: 'flex-end', gap: 2 }}>
               <Mono style={{ fontSize: 17, fontWeight: '700', color }}>{amount}</Mono>
               <Pressable accessibilityRole="button" onPress={() => remove(e.id)} hitSlop={10}>
@@ -766,6 +803,183 @@ function HistoryScreen({ data, cal, price, update, say, go, share }) {
       <Text style={st.small}>Sends everything as text so you can paste it into Claude for a check-up.</Text>
       <Btn kind="quiet" title="Send feedback" onPress={() => go('feedback')} />
       <Text style={[st.small, { marginTop: 8 }]}>Fuel prices contain public sector information licensed under the Open Government Licence v3.0.</Text>
+    </View>
+  );
+}
+
+// ---------- driver score, journey snapshot, tips ----------
+const scoreColour = (s) => (s >= 85 ? C.good : s >= 70 ? C.amber : C.warn);
+const PART_NAMES = { smooth: 'Smooth driving', speed: 'Speed', idle: 'Idling' };
+
+function ScoreBar({ label, score, detail }) {
+  return (
+    <View style={{ gap: 4 }}>
+      <View style={st.between}>
+        <Text style={[st.body, { color: C.ink, fontWeight: '600' }]}>{label}</Text>
+        <Mono style={{ fontSize: 15, fontWeight: '700', color: scoreColour(score) }}>{score}</Mono>
+      </View>
+      <View style={st.barTrack} accessibilityLabel={label + ' ' + score + ' out of 100'}>
+        <View style={[st.barFill, { width: Math.max(2, score) + '%', backgroundColor: scoreColour(score) }]} />
+      </View>
+      {detail ? <Text style={st.small}>{detail}</Text> : null}
+    </View>
+  );
+}
+
+function BigScore({ score, caption }) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+      <View style={[st.scoreRing, { borderColor: scoreColour(score) }]}>
+        <Mono style={{ fontSize: 34, fontWeight: '700', letterSpacing: -1 }}>{score}</Mono>
+      </View>
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text style={[st.h2, { fontSize: 22, color: scoreColour(score) }]}>{scoreLabel(score)}</Text>
+        {caption ? <Text style={st.small}>{caption}</Text> : null}
+      </View>
+    </View>
+  );
+}
+
+function TipCard({ tip }) {
+  return (
+    <View style={[st.card, { gap: 6 }]}>
+      <Text style={[st.h2, { fontSize: 16 }]}>{tip.title}</Text>
+      <Text style={st.body}>{tip.body}</Text>
+    </View>
+  );
+}
+
+function DriverScoreCard({ data, cal, price, onTips }) {
+  const ds = driverScore(data.entries, { car: data.car, cal, price });
+  if (!ds) {
+    return (
+      <View style={st.card}>
+        <Label>Driver score</Label>
+        <Text style={st.small}>Your score appears after your first GPS trip of half a mile or more. It rates smooth driving, speed and idling.</Text>
+      </View>
+    );
+  }
+  const trend = ds.trend == null ? 'Last 30 days · ' + ds.trips + (ds.trips === 1 ? ' trip' : ' trips')
+    : (ds.trend > 0 ? 'Up ' + ds.trend : ds.trend < 0 ? 'Down ' + -ds.trend : 'No change') + ' on the 30 days before';
+  return (
+    <View style={[st.card, { gap: 14 }]}>
+      <Label>Driver score · last 30 days</Label>
+      <BigScore score={ds.score} caption={trend} />
+      <View style={{ gap: 10 }}>
+        {['smooth', 'speed', 'idle'].map((k) => <ScoreBar key={k} label={PART_NAMES[k]} score={ds.parts[k]} />)}
+      </View>
+      {ds.tips[0] ? <Text style={[st.body, { color: C.ink }]}>Top tip: {ds.tips[0].title.toLowerCase()}.</Text> : null}
+      <Pressable accessibilityRole="button" onPress={onTips} style={{ minHeight: 44, justifyContent: 'center' }}>
+        <Text style={[st.body, { color: C.amber, fontWeight: '700' }]}>Tips to improve</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function TripScreen({ trip, data, cal, price, update, onDone, onTips }) {
+  const [name, setName] = useState((trip && trip.name) || '');
+  if (!trip) {
+    return (
+      <View style={st.gap}>
+        <Brand />
+        <Text style={st.body}>That trip has been deleted.</Text>
+        <Btn kind="quiet" title="Back" onPress={onDone} />
+      </View>
+    );
+  }
+  const ctx = { car: data.car, cal, price };
+  const f = tripFuel(trip, data.car, data.entries, cal, price);
+  const tMpg = f.litres > 0 ? trip.miles / (f.litres / LITRES_PER_GALLON) : null;
+  const sc = hasScore(trip) ? scoreTrip(trip, ctx) : null;
+  const started = trip.createdAt ? new Date(trip.createdAt - (trip.seconds || 0) * 1000) : null;
+  const when = niceDate(trip.date) + (started ? ', ' + started.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '');
+  const saveName = () => {
+    const v = name.trim();
+    if (v !== (trip.name || '')) update((d) => ({ ...d, entries: d.entries.map((e) => (e.id === trip.id ? { ...e, name: v } : e)) }));
+  };
+  return (
+    <View style={st.gap}>
+      <Brand reg={data.car && data.car.reg} />
+      <View style={{ gap: 2 }}>
+        <Label>Journey snapshot · {when}</Label>
+        <Mono style={{ fontSize: 54, fontWeight: '700', letterSpacing: -2, color: C.amber }}>{f.cost != null ? gbp(f.cost) : '–'}</Mono>
+        <Text style={st.body}>of fuel{f.cost != null && trip.miles ? ', ' + ((f.cost * 100) / trip.miles).toFixed(1) + 'p a mile' : ''}</Text>
+      </View>
+      <View style={st.stats3}>
+        <Stat label="Miles" value={String(trip.miles)} />
+        <Stat label="mpg" value={tMpg ? tMpg.toFixed(0) : '–'} />
+        <Stat label="Minutes" value={trip.seconds ? String(Math.round(trip.seconds / 60)) : '–'} />
+      </View>
+      {sc ? (
+        <View style={[st.card, { gap: 14 }]}>
+          <Label>Driving score</Label>
+          <BigScore score={sc.score} />
+          <View style={{ gap: 12 }}>
+            {sc.parts.map((p) => <ScoreBar key={p.key} label={p.label} score={p.score} detail={p.detail} />)}
+          </View>
+        </View>
+      ) : (
+        <View style={st.card}>
+          <Text style={st.small}>
+            {trip.source !== 'gps' ? 'Trips added by hand don’t get a driving score.'
+              : !trip.behaviour ? 'Driving scores start from trips made with this version of the app.'
+                : 'Driving scores are given for GPS trips of half a mile or more.'}
+          </Text>
+        </View>
+      )}
+      {sc && sc.tips.length ? (
+        <View style={{ gap: 10 }}>
+          <Label>{sc.tips[0].id === 'good' ? 'Nice one' : 'Tips from this journey'}</Label>
+          {sc.tips.slice(0, 2).map((t) => <TipCard key={t.id} tip={t} />)}
+        </View>
+      ) : null}
+      <View style={st.field}>
+        <Text style={st.fieldLabel}>Name this journey</Text>
+        <TextInput value={name} onChangeText={setName} onBlur={saveName} onSubmitEditing={saveName} placeholder="e.g. School run"
+          placeholderTextColor="#6F827B" accessibilityLabel="Name this journey" style={st.input} />
+      </View>
+      <Text style={st.small}>Scores and savings are estimates from your phone’s GPS and the app’s fuel model. We only flag speed above 70 mph, the top UK limit; many roads have lower limits.</Text>
+      <Btn title="Done" onPress={() => { saveName(); onDone(); }} />
+      <Btn kind="quiet" title="More fuel-saving tips" onPress={() => { saveName(); onTips(); }} />
+    </View>
+  );
+}
+
+function TipsScreen({ data, cal, price }) {
+  const ds = driverScore(data.entries, { car: data.car, cal, price });
+  const saving = ds ? ds.savings.idle + ds.savings.speed : 0;
+  return (
+    <View style={st.gap}>
+      <Brand reg={data.car && data.car.reg} />
+      <Text style={st.h1}>Fuel-saving tips</Text>
+      {ds ? (
+        <>
+          <View style={[st.card, { gap: 10 }]}>
+            <Label>Your driving · last 30 days</Label>
+            <BigScore score={ds.score} caption={Math.round(ds.miles) + ' miles over ' + ds.trips + (ds.trips === 1 ? ' trip' : ' trips')} />
+            {saving >= 0.05 ? (
+              <Text style={[st.body, { color: C.ink }]}>Idling and speeds above 70 mph cost you about {gbp(saving)} in fuel.</Text>
+            ) : null}
+          </View>
+          {ds.tips.length ? (
+            <View style={{ gap: 10 }}>
+              <Label>For you</Label>
+              {ds.tips.slice(0, 3).map((t) => <TipCard key={t.id} tip={t} />)}
+            </View>
+          ) : (
+            <Text style={st.body}>No problem areas in your last 30 days. The tips below can still help.</Text>
+          )}
+        </>
+      ) : (
+        <Text style={st.body}>Personal tips appear after your first GPS trip. Meanwhile, these work for every driver.</Text>
+      )}
+      {TIP_LIBRARY.map((g) => (
+        <View key={g.group} style={{ gap: 10 }}>
+          <Label style={{ marginTop: 8 }}>{g.group}</Label>
+          {g.tips.map((t) => <TipCard key={t.title} tip={t} />)}
+        </View>
+      ))}
+      <Text style={st.small}>Personal savings are estimates from your trips and the app’s fuel model.</Text>
     </View>
   );
 }
@@ -860,9 +1074,9 @@ function AgreeScreen({ onAgree, onPrivacy }) {
       </Text>
       <View style={[st.card, { gap: 12 }]}>
         <Label>Shared automatically</Label>
-        <Bullets items={['Your car’s make, model and fuel', 'Each trip’s date, miles, fuel used and cost', 'Your fill-ups: amount, litres, price and station']} />
+        <Bullets items={['Your car’s make, model and fuel', 'Each trip’s date, miles, fuel used and cost', 'A driving score for each trip, with counts of sharp starts and stops', 'Your fill-ups: amount, litres, price and station']} />
         <Label style={{ marginTop: 6 }}>Never shared</Label>
-        <Bullets items={['Your routes, or where trips start and finish', 'Your registration number or name']} />
+        <Bullets items={['Your routes, or where trips start and finish', 'Your speeds', 'Your registration number or name']} />
       </View>
       <Bullets items={['You can leave the test at any time, which deletes your shared data.', 'You must be 18 or over to take part.']} />
       <Pressable accessibilityRole="link" onPress={onPrivacy} style={{ minHeight: 44, justifyContent: 'center' }}>
@@ -900,13 +1114,15 @@ function PrivacyScreen({ data, fromAgree, share, onBack, onLeave, onSetInsights 
           'A random tester code, not your name',
           'Your car’s make, model, year, engine size and fuel, and the CO₂, mpg and fuel price you entered',
           'Each trip’s date, miles, time taken, estimated fuel and cost, and how much was town, A-road or motorway',
+          'Each trip’s driving score (smooth driving and idling scores, and counts of sharp starts and stops)',
           'Your fill-ups: date, amount spent, litres, price, station name and any mileage you entered',
           'The app version and type of phone',
         ]} />
       </NoticeSection>
       <NoticeSection title="What is never shared">
         <Bullets items={[
-          'Your routes, or where trips start and finish. GPS is used on your phone only, to measure distance.',
+          'Your routes, or where trips start and finish. GPS is used on your phone only, to measure distance and driving style.',
+          'Your speeds, including any time above 70 mph. These are used on your phone only, for your own score and tips.',
           'Your registration number, name, contacts or trip names',
         ]} />
       </NoticeSection>
@@ -1090,6 +1306,9 @@ const st = StyleSheet.create({
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   chip: { flexBasis: '30%', flexGrow: 1, height: 58, borderRadius: 14, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface, alignItems: 'center', justifyContent: 'center' },
   chipWide: { flexBasis: '100%' },
+  barTrack: { height: 8, borderRadius: 4, backgroundColor: C.sunk, overflow: 'hidden' },
+  barFill: { height: 8, borderRadius: 4 },
+  scoreRing: { width: 84, height: 84, borderRadius: 42, borderWidth: 5, alignItems: 'center', justifyContent: 'center' },
   topicChip: { minHeight: 44, paddingHorizontal: 14, borderRadius: 22, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface, alignItems: 'center', justifyContent: 'center' },
   stepNum: { width: 28, height: 28, borderRadius: 14, backgroundColor: C.amber, alignItems: 'center', justifyContent: 'center', marginTop: -2 },
   stepNumText: { color: C.onAmber, fontWeight: '800', fontFamily: SANS },

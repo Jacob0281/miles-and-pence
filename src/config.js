@@ -2,7 +2,7 @@
 // variables › Actions › Variables), so switching a feature on needs no code change.
 
 /** Shown in feedback messages so we know which version a tester had. */
-export const APP_VERSION = '0.6 (test)';
+export const APP_VERSION = '0.7 (test)';
 
 /**
  * Address of the Miles & Pence service (Cloudflare Worker): reg lookup and test data sharing.
@@ -16,7 +16,7 @@ export const VEHICLE_LOOKUP_URL = API_URL;
 export const CONTACT = process.env.EXPO_PUBLIC_CONTACT || '';
 
 /** Bump when the privacy notice changes in a way testers should see again. */
-export const NOTICE_VERSION = 2;
-export const NOTICE_DATE = '5 November 2026';
+export const NOTICE_VERSION = 3;
+export const NOTICE_DATE = '11 November 2026';
 export const TEST_END = '3 December 2026';
 export const DELETE_BY = '31 March 2027';

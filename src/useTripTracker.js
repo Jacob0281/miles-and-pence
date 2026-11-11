@@ -14,6 +14,11 @@ const STOP_SECONDS = 40; // stopped this long at a station → ask about fuel
 const STATION_RADIUS_M = 60; // how close counts as "at" a station
 const STATION_REFRESH_M = 2500; // reload nearby stations after moving this far
 const KEEP_AWAKE_TAG = 'trip';
+const STILL_JITTER_M = 3; // without a reported speed, moving less than this between fixes = stopped
+// Sharp changes of speed. Starting points (about 0.3 g); the test data will tell us if they need tuning.
+const HARSH_ACCEL_MS2 = 2.8;
+const HARSH_BRAKE_MS2 = 3.2;
+const EVENT_COOLDOWN_MS = 4000;
 // When GPS pauses (screen locked, app in the background) and later resumes somewhere else,
 // fill the gap with the straight-line distance scaled up for real roads.
 const GAP_SECONDS = 20; // a pause longer than this counts as a gap
@@ -94,6 +99,22 @@ export function useTripTracker(model) {
     s.prevFix = p;
     const reported = c.speed != null && c.speed >= 0 ? c.speed : null;
 
+    // Driving style: sharp acceleration / braking from the change in speed between fixes.
+    const sample = (v, okForEvents) => {
+      // Without a reported speed, speeds worked out from position are too rough at a crawl.
+      const tooRough = reported == null && Math.max(v, s.v) < 8;
+      if (okForEvents && !tooRough && s.vT != null) {
+        const dtv = (p.t - s.vT) / 1000;
+        if (dtv >= 0.8 && dtv <= 3 && p.t - (s.lastEventT || 0) > EVENT_COOLDOWN_MS) {
+          const a = (v - s.v) / dtv;
+          if (a >= HARSH_ACCEL_MS2) { s.harshAccel += 1; s.lastEventT = p.t; }
+          else if (a <= -HARSH_BRAKE_MS2) { s.harshBrake += 1; s.lastEventT = p.t; }
+        }
+      }
+      s.v = v;
+      s.vT = okForEvents ? p.t : null;
+    };
+
     if (s.lastPos) {
       const d = haversine(s.lastPos, p);
       const dt = Math.max(1, (p.t - s.lastPos.t) / 1000);
@@ -112,16 +133,26 @@ export function useTripTracker(model) {
           s.gapMetres += dist;
           setGapMiles(s.gapMetres / METRES_PER_MILE);
           setLastGap({ miles: dist / METRES_PER_MILE, minutes: Math.round(pause / 60), at: Date.now() });
+          sample(reported != null ? reported : 0, false); // speed across a gap is unknown
+        } else {
+          sample(ms, true);
+          if (dt <= 3 && mph > s.maxMph) s.maxMph = mph;
+          if (mph > 70) {
+            // Extra fuel this stretch used compared with doing it at 60 mph.
+            s.over70Metres += dist;
+            s.over70Extra += Math.max(0, segmentLitres(dist, mph, m.baseMpg) - segmentLitres(dist, 60, m.baseMpg));
+          }
         }
         setMiles(s.metres / METRES_PER_MILE);
         setLitres(s.litres);
         setSpeedMph(gap ? (reported != null ? reported * 2.23694 : mph) : mph);
-      } else if (prev && (reported == null || reported < STILL_MS)) {
+      } else if (prev && (reported != null ? reported < STILL_MS : haversine(prev, p) < STILL_JITTER_M)) {
         const idle = Math.min(30, (p.t - prev.t) / 1000);
         s.idleSeconds += idle;
         s.litres += idleLitres(idle, m.fuel);
         setLitres(s.litres);
         setSpeedMph(reported != null ? reported * 2.23694 : 0);
+        sample(reported != null ? reported : 0, true);
       }
     } else {
       s.lastPos = p;
@@ -160,8 +191,9 @@ export function useTripTracker(model) {
       const keepStations = r.current.stations;
       const keepAt = r.current.stationsAt;
       r.current = { metres: 0, litres: 0, idleSeconds: 0, gapMetres: 0, bands: { town: 0, aroad: 0, motorway: 0 },
+        harshAccel: 0, harshBrake: 0, maxMph: 0, over70Metres: 0, over70Extra: 0, v: 0, vT: null, lastEventT: 0,
         stations: keepStations, stationsAt: keepAt, startedAt: Date.now() };
-      setMiles(0); setLitres(0); setElapsed(0); setSpeedMph(0); setStation(null); setGapMiles(0); setLastGap(null);
+      setMiles(0); setLitres(0); setElapsed(0); setSpeedMph(0); setStation(null); setGapMiles(0); setLastGap(null); setAccuracy(null);
       try {
         await activateKeepAwakeAsync(KEEP_AWAKE_TAG);
         awake.current = true;
@@ -190,6 +222,14 @@ export function useTripTracker(model) {
       idleSeconds: Math.round(s.idleSeconds),
       gapMiles: round(s.gapMetres / METRES_PER_MILE),
       bands: { town: round(s.bands.town), aroad: round(s.bands.aroad), motorway: round(s.bands.motorway) },
+      behaviour: {
+        v: 1,
+        harshAccel: s.harshAccel,
+        harshBrake: s.harshBrake,
+        maxMph: Math.round(s.maxMph),
+        over70Miles: round(s.over70Metres / METRES_PER_MILE),
+        over70ExtraLitres: round(s.over70Extra, 1000),
+      },
       start: s.startPoint || null,
       end: s.lastPos || null,
     };

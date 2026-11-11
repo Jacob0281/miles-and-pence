@@ -4,6 +4,7 @@
 import { Platform } from 'react-native';
 import { API_URL, APP_VERSION, NOTICE_VERSION } from './config';
 import { calibrate, currentPrice, monthSummary, odoCheck, officialMpg, sortEntries, todayKey, tripFuel } from './fuel';
+import { driverScore, hasScore, scoreTrip } from './score';
 
 const CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -42,6 +43,16 @@ export function buildSnapshot(data) {
   const odo = odoCheck(car, entries);
   let est = 0;
   for (const t of trips) est += tripFuel(t, car, entries, cal, price).cost || 0;
+  const ctx = { car, cal, price };
+  const ds = driverScore(entries, ctx);
+  // Driving style shared as scores and counts only. Speeds (including time above 70 mph) stay on the phone.
+  const styleOf = (t) => {
+    if (!hasScore(t)) return null;
+    const s = scoreTrip(t, ctx);
+    const part = (k) => s.parts.find((p) => p.key === k).score;
+    return { score: s.score, smooth: part('smooth'), idle: part('idle'),
+      sharpStarts: t.behaviour.harshAccel || 0, sharpStops: t.behaviour.harshBrake || 0 };
+  };
   return {
     appVersion: APP_VERSION,
     platform: platformName(),
@@ -65,12 +76,14 @@ export function buildSnapshot(data) {
       k: cal.calibrated ? Math.round(cal.k * 1000) / 1000 : null,
       odoCoverage: odo && !odo.error ? Math.round(odo.coverage * 100) / 100 : null,
       lastTripDate: trips.length ? trips[trips.length - 1].date : null,
+      driverScore: ds ? ds.score : null,
     },
     // Entries without anything that could reveal where someone lives or works.
     entries: entries.map((e) => {
       if (e.kind === 'trip') {
         return { kind: 'trip', date: e.date, miles: e.miles, litres: e.litres ?? null, seconds: e.seconds ?? null,
-          idleSeconds: e.idleSeconds ?? null, bands: e.bands || null, gapMiles: e.gapMiles || 0, source: e.source || null };
+          idleSeconds: e.idleSeconds ?? null, bands: e.bands || null, gapMiles: e.gapMiles || 0, source: e.source || null,
+          style: styleOf(e) };
       }
       if (e.kind === 'fill') {
         return { kind: 'fill', date: e.date, spend: e.spend, price: e.price, litres: e.litres, full: !!e.full,
