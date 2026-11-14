@@ -9,6 +9,7 @@ import { loadData, newId, saveData } from './src/store';
 import { useTripTracker } from './src/useTripTracker';
 import { livePrice } from './src/stations';
 import { driverScore, hasScore, scoreLabel, scoreTrip, TIP_LIBRARY } from './src/score';
+import { budgetForecast } from './src/budget';
 import { APP_VERSION, CONTACT, DELETE_BY, NOTICE_DATE, NOTICE_VERSION, TEST_END, VEHICLE_LOOKUP_URL } from './src/config';
 import { leaveTest, newTester, shareNow, sharingAvailable } from './src/sharing';
 
@@ -179,7 +180,7 @@ export default function App() {
           {screen === 'car' && <CarScreen data={data} update={update} onDone={() => { say('Car saved'); setScreen('home'); }} />}
           {screen === 'home' && (
             <HomeScreen data={data} mpg={mpg} price={price} cal={cal} tracker={tracker} onStart={startTrip} go={setScreen}
-              addEntry={addEntry} say={say} onFill={() => { setFillStation(null); setScreen('fill'); }} />
+              update={update} addEntry={addEntry} say={say} onFill={() => { setFillStation(null); setScreen('fill'); }} />
           )}
           {screen === 'live' && (
             <LiveScreen tracker={tracker} baseMpg={baseMpg} k={cal.k} price={price} car={car}
@@ -437,7 +438,7 @@ function OdoPrompt({ addEntry, say }) {
   );
 }
 
-function HomeScreen({ data, mpg, price, cal, tracker, onStart, go, onFill, addEntry, say }) {
+function HomeScreen({ data, mpg, price, cal, tracker, onStart, go, onFill, addEntry, say, update }) {
   const s = monthSummary(data.car, data.entries, todayKey().slice(0, 7));
   const ppm = pencePerMile(mpg, price);
   const insecure = Platform.OS === 'web' && typeof window !== 'undefined' && !window.isSecureContext;
@@ -468,6 +469,7 @@ function HomeScreen({ data, mpg, price, cal, tracker, onStart, go, onFill, addEn
         <Stat label={cal.realMpg ? 'Your real mpg' : 'Official mpg'} value={mpg ? mpg.toFixed(1) : '–'}
           sub={cal.realMpg ? 'from your fill-ups' : 'until 2 full fill-ups'} />
       </View>
+      <BudgetCard data={data} mpg={mpg} update={update} say={say} />
       <DriverScoreCard data={data} cal={cal} price={price} onTips={() => go('tips')} />
       <View style={st.row}>
         <Btn kind="quiet" title="Log a fill-up" onPress={onFill} style={st.flex} />
@@ -852,6 +854,86 @@ function TipCard({ tip }) {
     <View style={[st.card, { gap: 6 }]}>
       <Text style={[st.h2, { fontSize: 16 }]}>{tip.title}</Text>
       <Text style={st.body}>{tip.body}</Text>
+    </View>
+  );
+}
+
+const BUDGET_CHIPS = [60, 80, 100, 150, 200];
+
+function BudgetCard({ data, mpg, update, say }) {
+  const budget = data.budget && data.budget.monthly;
+  const [editing, setEditing] = useState(false);
+  const [other, setOther] = useState('');
+  const save = (v) => {
+    update((d) => ({ ...d, budget: v ? { monthly: v, setAt: new Date().toISOString() } : null }));
+    setEditing(false);
+    setOther('');
+    say(v ? 'Budget set: £' + v + ' a month' : 'Budget removed');
+  };
+  if (!budget || editing) {
+    const typed = num(other);
+    return (
+      <View style={[st.card, { gap: 12 }]}>
+        <Label>Monthly fuel budget</Label>
+        <Text style={st.small}>Set a budget and we'll tell you each month whether you're on track, based on how you've been driving lately.</Text>
+        <View style={st.chips}>
+          {BUDGET_CHIPS.map((v) => (
+            <Pressable key={v} accessibilityRole="button" accessibilityState={{ selected: budget === v }} onPress={() => save(v)}
+              style={[st.chip, budget === v && st.chipOn]}>
+              <Mono style={[{ fontSize: 18, fontWeight: '700' }, budget === v && { color: C.onAmber }]}>£{v}</Mono>
+            </Pressable>
+          ))}
+        </View>
+        <View style={[st.row, { alignItems: 'flex-end' }]}>
+          <Field label="Other amount (£)" value={other} onChangeText={setOther} placeholder="e.g. 120" keyboard="decimal-pad" style={st.flex} />
+          <Btn kind="quiet" title="Set" disabled={!(typed > 0)} onPress={() => save(Math.round(typed))} />
+        </View>
+        {budget ? (
+          <View style={st.row}>
+            <Btn kind="quiet" title="Cancel" onPress={() => setEditing(false)} style={st.flex} />
+            <Btn kind="quiet" title="Remove budget" onPress={() => save(null)} style={st.flex} />
+          </View>
+        ) : null}
+      </View>
+    );
+  }
+  const f = budgetForecast(data.car, data.entries, budget, mpg);
+  let verdict, colour, line;
+  if (f.alreadyOver) {
+    verdict = 'No'; colour = C.warn;
+    line = 'Already ' + gbp(f.spent - budget) + ' over this month.';
+  } else if (!f.ready) {
+    verdict = null; colour = C.muted;
+    line = 'A few more trips and we can forecast. ' + gbp(f.left) + ' left this month.';
+  } else if (f.onTrack) {
+    verdict = f.close ? 'Yes, just' : 'Yes'; colour = f.close ? C.amber : C.good;
+    line = 'Heading for about ' + gbp(f.forecast) + ' by the end of ' + monthName() + '.';
+  } else {
+    verdict = 'No'; colour = C.warn;
+    line = 'Heading for about ' + gbp(f.forecast) + ', roughly ' + gbp(f.over) + ' over.';
+  }
+  const pct = Math.min(100, (f.spent / budget) * 100);
+  const fpct = Math.min(100, (f.forecast / budget) * 100);
+  return (
+    <View style={[st.card, { gap: 10 }]}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
+        <Label>Within budget? · {gbp(budget).replace('.00', '')} a month</Label>
+        {verdict ? <Mono style={{ fontSize: 22, fontWeight: '800', color: colour }}>{verdict}</Mono> : null}
+      </View>
+      <View style={st.barTrack} accessibilityLabel={'Spent ' + gbp(f.spent) + ' of ' + gbp(budget)}>
+        {f.ready && !f.alreadyOver ? <View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: fpct + '%', borderRadius: 4, backgroundColor: colour, opacity: 0.3 }} /> : null}
+        <View style={[st.barFill, { width: pct + '%', backgroundColor: colour === C.muted ? C.amber : colour }]} />
+      </View>
+      <Text style={[st.body, { color: C.ink }]}>{gbp(f.spent)} spent · {line}</Text>
+      {f.daysLeft > 0 && f.left > 0 && f.ready ? (
+        <Text style={st.small}>
+          {f.onTrack ? 'You can spend' : 'To get back on budget, spend'} up to {gbp(f.perWeekLeft)} a week for the rest of the month
+          {f.milesLeft ? ' (about ' + Math.round(f.milesLeft) + ' miles in total)' : ''}.
+        </Text>
+      ) : null}
+      <Pressable accessibilityRole="button" onPress={() => setEditing(true)} style={{ minHeight: 44, justifyContent: 'center' }}>
+        <Text style={[st.body, { color: C.amber, fontWeight: '700' }]}>Change budget</Text>
+      </Pressable>
     </View>
   );
 }
