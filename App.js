@@ -454,7 +454,7 @@ function HomeScreen({ data, mpg, price, cal, tracker, onStart, go, onFill, addEn
       </View>
       <Btn title={tracker.status === 'starting' ? 'Finding you…' : 'Start a trip'} onPress={onStart} disabled={tracker.status === 'starting'} style={{ height: 64 }} />
       {tracker.status === 'denied' ? (
-        <Text style={st.warn}>Location is switched off for this site. On iPhone: Settings › Privacy & Security › Location Services › Safari Websites › While Using, then try again.</Text>
+        <Text style={st.warn}>Location is blocked for this site. On iPhone: Settings › Privacy & Security › Location Services › Safari Websites › While Using the App, with Precise Location on. Then in Safari, tap the icon at the left of the address bar › Website Settings › Location › Allow, and reload.</Text>
       ) : null}
       {tracker.error ? <Text style={st.warn}>GPS problem: {tracker.error}</Text> : null}
       {insecure ? <Text style={st.warn}>GPS only works when this page is opened from its https:// address.</Text> : null}
@@ -495,12 +495,19 @@ function LiveScreen({ tracker, baseMpg, k, price, car, onEnd, onFuel }) {
         <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: gpsOk ? C.good : C.amber }} />
         <Label>{gpsOk ? 'Trip in progress' : 'Waiting for a good GPS signal'}</Label>
       </View>
-      {!gpsOk && tracker.elapsed >= 15 ? (
+      {!gpsOk && (tracker.gpsError || tracker.elapsed >= 15) ? (
         <View style={[st.card, { borderColor: C.amber, gap: 6 }]}>
-          {tracker.accuracy == null ? (
+          {tracker.gpsError && tracker.gpsError.kind === 'denied' ? (
             <>
-              <Text style={[st.h2, { fontSize: 16 }]}>No location from your phone yet</Text>
-              <Text style={st.body}>Check Settings › Privacy & Security › Location Services is on, and that Safari Websites is set to While Using the App. Then close this app fully and reopen it.</Text>
+              <Text style={[st.h2, { fontSize: 16 }]}>Location is blocked for this site</Text>
+              <Text style={st.body}>1. Settings › Privacy & Security › Location Services: turn it on, then set Safari Websites to While Using the App with Precise Location on.</Text>
+              <Text style={st.body}>2. In Safari, tap the icon at the left of the address bar › Website Settings › Location › Allow.</Text>
+              <Text style={st.body}>3. Reload the page and start the trip again.</Text>
+            </>
+          ) : tracker.accuracy == null ? (
+            <>
+              <Text style={[st.h2, { fontSize: 16 }]}>{tracker.gpsError && tracker.gpsError.kind === 'unavailable' ? 'Your phone can’t find its location' : 'No location from your phone yet'}</Text>
+              <Text style={st.body}>Check Settings › Privacy & Security › Location Services is on, and Safari Websites is set to While Using the App with Precise Location on. If you’re indoors, step outside for a minute.</Text>
             </>
           ) : tracker.accuracy > 500 ? (
             <>

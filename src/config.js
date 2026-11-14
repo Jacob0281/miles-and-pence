@@ -2,7 +2,7 @@
 // variables › Actions › Variables), so switching a feature on needs no code change.
 
 /** Shown in feedback messages so we know which version a tester had. */
-export const APP_VERSION = '0.7 (test)';
+export const APP_VERSION = '0.7.1 (test)';
 
 /**
  * Address of the Miles & Pence service (Cloudflare Worker): reg lookup and test data sharing.
